@@ -969,7 +969,6 @@ export interface TopicItem {
 	content: string;
 	criteria: TopicCriteria;
 	pin_ids: string[];
-	channel_ids: string[];
 	status: TopicStatus;
 	max_words: number;
 	last_memory_at: string | null;
@@ -1006,7 +1005,6 @@ export interface TopicVersionsResponse {
 export interface CreateTopicRequest {
 	title: string;
 	criteria?: TopicCriteria;
-	channel_ids?: string[];
 	pin_ids?: string[];
 	status?: TopicStatus;
 	max_words?: number;
@@ -1015,7 +1013,6 @@ export interface CreateTopicRequest {
 export interface UpdateTopicRequest {
 	title?: string;
 	criteria?: TopicCriteria;
-	channel_ids?: string[];
 	pin_ids?: string[];
 	status?: TopicStatus;
 	max_words?: number;
