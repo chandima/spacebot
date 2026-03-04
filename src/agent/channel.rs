@@ -739,7 +739,7 @@ impl Channel {
         }
         let supported_source = matches!(
             message.source.as_str(),
-            "telegram" | "discord" | "slack" | "twitch"
+            "telegram" | "discord" | "slack" | "twitch" | "signal"
         );
         if !supported_source {
             return Ok(false);
@@ -1507,7 +1507,7 @@ impl Channel {
             && !replied_flag.load(std::sync::atomic::Ordering::Relaxed)
             && matches!(
                 message.source.as_str(),
-                "discord" | "telegram" | "slack" | "twitch"
+                "discord" | "telegram" | "slack" | "twitch" | "signal"
             )
         {
             self.send_builtin_text(
@@ -1796,6 +1796,7 @@ impl Channel {
             self.deps.cron_tool.clone(),
             send_agent_message_tool,
             allow_direct_reply,
+            self.current_adapter().map(|s| s.to_string()),
         )
         .await
         {
