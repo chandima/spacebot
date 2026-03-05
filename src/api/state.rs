@@ -141,6 +141,13 @@ pub enum ApiEvent {
         channel_id: String,
         is_typing: bool,
     },
+    /// Streaming text delta for an outbound assistant message.
+    OutboundMessageDelta {
+        agent_id: String,
+        channel_id: String,
+        text_delta: String,
+        aggregated_text: String,
+    },
     /// A worker was started.
     WorkerStarted {
         agent_id: String,
@@ -479,13 +486,41 @@ impl ApiState {
                                     })
                                     .ok();
                             }
+                            ProcessEvent::TextDelta {
+                                channel_id: Some(channel_id),
+                                text_delta,
+                                aggregated_text,
+                                ..
+                            } => {
+                                api_tx
+                                    .send(ApiEvent::OutboundMessageDelta {
+                                        agent_id: agent_id.clone(),
+                                        channel_id: channel_id.to_string(),
+                                        text_delta: text_delta.clone(),
+                                        aggregated_text: aggregated_text.clone(),
+                                    })
+                                    .ok();
+                            }
                             _ => {}
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(count)) => {
-                        tracing::debug!(agent_id = %agent_id, count, "API event forwarder lagged, skipped events");
+                    Err(error) => {
+                        match crate::classify_broadcast_recv_result::<crate::ProcessEvent>(Err(
+                            error,
+                        )) {
+                            crate::BroadcastRecvResult::Lagged(count) => {
+                                tracing::debug!(
+                                    agent_id = %agent_id,
+                                    count,
+                                    "API event forwarder lagged, skipped events"
+                                );
+                            }
+                            crate::BroadcastRecvResult::Closed => break,
+                            crate::BroadcastRecvResult::Event(_) => unreachable!(
+                                "classifying an Err recv result should never produce Event"
+                            ),
+                        }
                     }
-                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
         });

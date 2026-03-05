@@ -84,6 +84,7 @@ pub(super) async fn events_sse(
                         let event_type = match &event {
                             ApiEvent::InboundMessage { .. } => "inbound_message",
                             ApiEvent::OutboundMessage { .. } => "outbound_message",
+                            ApiEvent::OutboundMessageDelta { .. } => "outbound_message_delta",
                             ApiEvent::TypingState { .. } => "typing_state",
                             ApiEvent::WorkerStarted { .. } => "worker_started",
                             ApiEvent::WorkerStatusUpdate { .. } => "worker_status",
@@ -102,13 +103,20 @@ pub(super) async fn events_sse(
                             .data(json));
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    tracing::debug!(count, "SSE client lagged");
-                    yield Ok(axum::response::sse::Event::default()
-                        .event("lagged")
-                        .data(format!("{{\"skipped\":{count}}}")));
+                Err(error) => {
+                    match crate::classify_broadcast_recv_result::<ApiEvent>(Err(error)) {
+                        crate::BroadcastRecvResult::Lagged(count) => {
+                            tracing::debug!(count, "SSE client lagged");
+                            yield Ok(axum::response::sse::Event::default()
+                                .event("lagged")
+                                .data(format!("{{\"skipped\":{count}}}")));
+                        }
+                        crate::BroadcastRecvResult::Closed => break,
+                        crate::BroadcastRecvResult::Event(_) => unreachable!(
+                            "classifying an Err recv result should never produce Event"
+                        ),
+                    }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     };

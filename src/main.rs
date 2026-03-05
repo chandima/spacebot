@@ -2075,6 +2075,27 @@ async fn initialize_agents(
                 )
             })?;
 
+        let run_logger = spacebot::conversation::ProcessRunLogger::new(db.sqlite.clone());
+        let orphaned_workers = run_logger
+            .reconcile_running_workers_for_agent(
+                &agent_config.id,
+                "Worker interrupted: Spacebot restarted before completion.",
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to reconcile stale running workers for agent '{}'",
+                    agent_config.id
+                )
+            })?;
+        if orphaned_workers > 0 {
+            tracing::warn!(
+                agent_id = %agent_config.id,
+                orphaned_workers,
+                "marked stale running workers as failed during startup"
+            );
+        }
+
         // Per-agent settings store (redb-backed)
         let settings_path = agent_config.data_dir.join("settings.redb");
         let settings_store = Arc::new(
@@ -2107,8 +2128,8 @@ async fn initialize_agents(
             embedding_model.clone(),
         ));
 
-        // Per-agent event bus (broadcast for fan-out to multiple channels)
-        let (event_tx, _event_rx) = tokio::sync::broadcast::channel(256);
+        // Per-agent control and memory event buses (broadcast fan-out).
+        let (event_tx, memory_event_tx) = spacebot::create_process_event_buses();
 
         let agent_id: spacebot::AgentId = Arc::from(agent_config.id.as_str());
         let mcp_manager = Arc::new(spacebot::mcp::McpManager::new(agent_config.mcp.clone()));
@@ -2141,7 +2162,12 @@ async fn initialize_agents(
         ));
 
         // Set the settings store in RuntimeConfig and apply config-driven defaults
-        runtime_config.set_settings(settings_store.clone());
+        let explicit_listen_only = config
+            .agents
+            .iter()
+            .find(|agent| agent.id == agent_config.id)
+            .and_then(|agent| agent.channel.map(|channel| channel.listen_only_mode));
+        runtime_config.set_settings(settings_store.clone(), explicit_listen_only);
         if let Err(error) = settings_store.set_worker_log_mode(config.defaults.worker_log_mode) {
             tracing::warn!(%error, agent = %agent_config.id, "failed to set worker_log_mode from config");
         }
@@ -2183,6 +2209,7 @@ async fn initialize_agents(
             cron_tool: None,
             runtime_config,
             event_tx,
+            memory_event_tx,
             sqlite_pool: db.sqlite.clone(),
             messaging_manager: None,
             sandbox,
@@ -2746,7 +2773,7 @@ async fn initialize_agents(
         }
     }
 
-    // Start cortex warmup, bulletin loops, and association loops for each agent
+    // Start cortex warmup, runtime, and association loops for each agent
     for (agent_id, agent) in agents.iter() {
         let cortex_logger = spacebot::agent::cortex::CortexLogger::new(agent.db.sqlite.clone());
         let warmup_handle =
@@ -2754,10 +2781,10 @@ async fn initialize_agents(
         cortex_handles.push(warmup_handle);
         tracing::info!(agent_id = %agent_id, "warmup loop started");
 
-        let bulletin_handle =
-            spacebot::agent::cortex::spawn_bulletin_loop(agent.deps.clone(), cortex_logger.clone());
-        cortex_handles.push(bulletin_handle);
-        tracing::info!(agent_id = %agent_id, "cortex bulletin loop started");
+        let cortex_handle =
+            spacebot::agent::cortex::spawn_cortex_loop(agent.deps.clone(), cortex_logger.clone());
+        cortex_handles.push(cortex_handle);
+        tracing::info!(agent_id = %agent_id, "cortex loop started");
 
         let association_handle =
             spacebot::agent::cortex::spawn_association_loop(agent.deps.clone(), cortex_logger);
@@ -2786,6 +2813,7 @@ async fn initialize_agents(
                 agent.deps.agent_id.clone(),
                 agent.deps.task_store.clone(),
                 agent.deps.memory_search.clone(),
+                agent.deps.memory_event_tx.clone(),
                 conversation_logger,
                 channel_store,
                 run_logger,
@@ -2794,6 +2822,7 @@ async fn initialize_agents(
                 brave_search_key,
                 agent.deps.runtime_config.workspace_dir.clone(),
                 agent.deps.sandbox.clone(),
+                agent.deps.runtime_config.clone(),
             );
             let store = spacebot::agent::cortex_chat::CortexChatStore::new(agent.db.sqlite.clone());
             let session = spacebot::agent::cortex_chat::CortexChatSession::new(

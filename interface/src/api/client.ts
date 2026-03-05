@@ -40,6 +40,14 @@ export interface OutboundMessageEvent {
 	text: string;
 }
 
+export interface OutboundMessageDeltaEvent {
+	type: "outbound_message_delta";
+	agent_id: string;
+	channel_id: string;
+	text_delta: string;
+	aggregated_text: string;
+}
+
 export interface TypingStateEvent {
 	type: "typing_state";
 	agent_id: string;
@@ -112,6 +120,7 @@ export interface ToolCompletedEvent {
 export type ApiEvent =
 	| InboundMessageEvent
 	| OutboundMessageEvent
+	| OutboundMessageDeltaEvent
 	| TypingStateEvent
 	| WorkerStartedEvent
 	| WorkerStatusEvent
@@ -564,6 +573,12 @@ export interface BrowserSection {
 	enabled: boolean;
 	headless: boolean;
 	evaluate_enabled: boolean;
+	persist_session: boolean;
+	close_policy: "close_browser" | "close_tabs" | "detach";
+}
+
+export interface ChannelSection {
+	listen_only_mode: boolean;
 }
 
 export interface SandboxSection {
@@ -584,6 +599,7 @@ export interface AgentConfigResponse {
 	coalesce: CoalesceSection;
 	memory_persistence: MemoryPersistenceSection;
 	browser: BrowserSection;
+	channel: ChannelSection;
 	discord: DiscordSection;
 	sandbox: SandboxSection;
 }
@@ -646,6 +662,12 @@ export interface BrowserUpdate {
 	enabled?: boolean;
 	headless?: boolean;
 	evaluate_enabled?: boolean;
+	persist_session?: boolean;
+	close_policy?: "close_browser" | "close_tabs" | "detach";
+}
+
+export interface ChannelUpdate {
+	listen_only_mode?: boolean;
 }
 
 export interface SandboxUpdate {
@@ -666,6 +688,7 @@ export interface AgentConfigUpdateRequest {
 	coalesce?: CoalesceUpdate;
 	memory_persistence?: MemoryPersistenceUpdate;
 	browser?: BrowserUpdate;
+	channel?: ChannelUpdate;
 	discord?: DiscordUpdate;
 	sandbox?: SandboxUpdate;
 }
