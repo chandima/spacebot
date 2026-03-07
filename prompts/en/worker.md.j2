@@ -93,24 +93,60 @@ Run a subprocess with specific arguments. Use this for programs that need struct
 
 Automate a headless Chrome browser. Use this for web scraping, testing web interfaces, filling out forms, or any task requiring browser interaction.
 
-**Workflow:**
+**Workflow:** launch → navigate → snapshot → act → (repeat snapshot/act as needed) → close
 
-1. `launch` — Start the browser
-2. `navigate` — Go to a URL
-3. `snapshot` — Get the page's accessibility tree with element refs (e1, e2, e3...)
-4. `act` — Interact with elements by ref: `click`, `type`, `press_key`, `hover`, `scroll_into_view`, `focus`
-5. `screenshot` — Capture the page or a specific element
+**Actions:**
+
+| Action | Required params | Description |
+|--------|----------------|-------------|
+| `launch` | — | Start or reconnect to the browser. Always call first. |
+| `navigate` | `url` | Go to a URL in the active tab. |
+| `open` | `url` (optional) | Open a **new** tab. Don't use this to navigate — use `navigate` instead. |
+| `tabs` | — | List all open tabs. |
+| `focus` | `target_id` | Switch to a tab by target ID. |
+| `close_tab` | `target_id` (optional) | Close a tab (active tab if omitted). |
+| `snapshot` | — | Get the accessibility tree with interactive element refs. |
+| `act` | `act_kind`, `element_ref` | Interact with an element. **`act_kind` is mandatory.** |
+| `screenshot` | `full_page` (optional) | Capture the viewport (or full page). |
+| `evaluate` | `script` | Run JavaScript in the page. Last resort — prefer snapshot+act. |
+| `content` | — | Get page HTML (large, use sparingly). |
 {%- if browser_persist_session %}
-6. `close` — Detach from the browser when done (tabs and session are preserved for the next worker)
+| `close` | — | Detach from the browser. Tabs and session are preserved for the next worker. |
 {%- else %}
-6. `close` — Shut down the browser when done
+| `close` | — | Shut down the browser when done. |
 {%- endif %}
 
-**Multi-tab support:** Use `open` to create new tabs, `tabs` to list them, `focus` to switch between them, `close_tab` to close one.
+**The `act` action — IMPORTANT:**
 
-**Element refs** are assigned during `snapshot` and look like "e1", "e2". Always snapshot before interacting — refs reset on each snapshot or navigation.
+The `act_kind` parameter is **always required** when `action` is `act`. Valid values:
 
-**Additional actions:** `content` (get page HTML), `evaluate` (run JavaScript, if enabled in config).
+- `click` — Click the element. Requires: `element_ref`.
+- `type` — Type text into the element. Requires: `element_ref`, `text`.
+- `press_key` — Press a key (e.g., "Enter", "Tab", "Escape"). Requires: `key`. Optional: `element_ref`.
+- `hover` — Hover over the element. Requires: `element_ref`.
+- `scroll_into_view` — Scroll element into viewport. Requires: `element_ref`.
+- `focus` — Focus the element. Requires: `element_ref`.
+
+Examples:
+```json
+{"action": "act", "act_kind": "click", "element_ref": "e3"}
+{"action": "act", "act_kind": "type", "element_ref": "e5", "text": "hello@example.com"}
+{"action": "act", "act_kind": "press_key", "key": "Enter"}
+```
+
+**Element refs:**
+
+- Refs like `e0`, `e1`, `e2` are assigned by `snapshot` and reset on each snapshot or navigation.
+- Always run `snapshot` before using `act` — stale refs will fail.
+- If an `act` call fails with "Could not find node", run `snapshot` again to get fresh refs, then retry with the new ref.
+- Don't pass `url` or `text` when you mean `act_kind` — these are different parameters.
+
+**Common mistakes to avoid:**
+
+- Calling `act` without `act_kind` — this will always error. Every `act` call needs an `act_kind`.
+- Using `open` to navigate — `open` creates a new tab. Use `navigate` to go to a URL in the current tab.
+- Using `evaluate` to click buttons — use `snapshot` + `act` with `act_kind: "click"` instead. Only use `evaluate` when the accessibility tree doesn't expose what you need.
+- Retrying the exact same failed call — read the error, fix the parameters, then retry.
 
 ### secret_set
 

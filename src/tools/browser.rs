@@ -972,7 +972,11 @@ impl BrowserTool {
         key: Option<String>,
     ) -> Result<BrowserOutput, BrowserError> {
         let Some(act_kind) = act_kind else {
-            return Err(BrowserError::new("act_kind is required for act action"));
+            return Err(BrowserError::new(
+                "act_kind is required for act action — must be one of: \
+                 click, type, press_key, hover, scroll_into_view, focus. \
+                 Example: {\"action\": \"act\", \"act_kind\": \"click\", \"element_ref\": \"e3\"}",
+            ));
         };
 
         let state = self.state.lock().await;
@@ -989,7 +993,10 @@ impl BrowserTool {
             }
             ActKind::Type => {
                 let Some(text) = text else {
-                    return Err(BrowserError::new("text is required for act:type"));
+                    return Err(BrowserError::new(
+                        "text is required for act_kind: \"type\" — \
+                         example: {\"action\": \"act\", \"act_kind\": \"type\", \"element_ref\": \"e5\", \"text\": \"hello\"}",
+                    ));
                 };
                 let element = self.resolve_element_ref(&state, page, element_ref).await?;
                 element
@@ -1007,7 +1014,10 @@ impl BrowserTool {
             }
             ActKind::PressKey => {
                 let Some(key) = key else {
-                    return Err(BrowserError::new("key is required for act:press_key"));
+                    return Err(BrowserError::new(
+                        "key is required for act_kind: \"press_key\" — \
+                         example: {\"action\": \"act\", \"act_kind\": \"press_key\", \"key\": \"Enter\"}",
+                    ));
                 };
                 if element_ref.is_some() {
                     let element = self.resolve_element_ref(&state, page, element_ref).await?;
@@ -1331,24 +1341,40 @@ impl BrowserTool {
         element_ref: Option<String>,
     ) -> Result<chromiumoxide::Element, BrowserError> {
         let Some(ref_id) = element_ref else {
-            return Err(BrowserError::new("element_ref is required for this action"));
+            return Err(BrowserError::new(
+                "element_ref is required for this action — run snapshot first, \
+                 then use a ref like \"e0\", \"e1\" from the results",
+            ));
         };
 
         let elem_ref = state.element_refs.get(&ref_id).ok_or_else(|| {
             BrowserError::new(format!(
-                "unknown element ref '{ref_id}' — run snapshot first to get element refs"
+                "unknown element ref '{ref_id}' — run snapshot first to get fresh element refs"
             ))
         })?;
 
-        // Use backend_node_id to find the element via CSS selector derived from role+name,
-        // or fall back to XPath with aria role and name attributes
-        let selector = build_selector_for_ref(elem_ref);
+        // Try multiple selector strategies. The accessibility tree role doesn't
+        // always map to an explicit [role] attribute in the DOM — native HTML
+        // elements (button, input, a) have implicit ARIA roles without the
+        // attribute being present.
+        let selectors = build_selectors_for_ref(elem_ref);
 
-        page.find_element(&selector).await.map_err(|error| {
-            BrowserError::new(format!(
-                "failed to find element for ref '{ref_id}' (selector: {selector}): {error}"
-            ))
-        })
+        for selector in &selectors {
+            if let Ok(element) = page.find_element(selector).await {
+                return Ok(element);
+            }
+        }
+
+        Err(BrowserError::new(format!(
+            "failed to find element for ref '{ref_id}' \
+             (role: {}, name: {:?}) — the page may have changed since \
+             the last snapshot. Run snapshot again to get fresh refs, \
+             then retry with the updated ref. \
+             Selectors tried: {}",
+            elem_ref.role,
+            elem_ref.name,
+            selectors.join(", "),
+        )))
     }
 }
 
@@ -1387,18 +1413,63 @@ fn extract_ax_value_string(
         .and_then(|v| v.as_str().map(|s| s.to_string()))
 }
 
-/// Build a CSS selector from an ElementRef's role and name.
-fn build_selector_for_ref(elem_ref: &ElementRef) -> String {
-    // Use ARIA role attribute as primary selector, with name for disambiguation
-    let role_selector = format!("[role='{}']", elem_ref.role);
-
-    if let Some(name) = &elem_ref.name {
-        // Escape single quotes in the name for CSS selector safety
-        let escaped = name.replace('\'', "\\'");
-        format!("{role_selector}[aria-label='{escaped}']")
-    } else {
-        role_selector
+/// Map an accessibility tree role to its native HTML tag equivalent.
+/// Native elements don't have explicit `[role]` attributes — a `<button>` has
+/// implicit role "button" in the AX tree but no `role="button"` in the DOM.
+fn role_to_native_tag(role: &str) -> Option<&'static str> {
+    match role {
+        "button" => Some("button"),
+        "link" => Some("a"),
+        "textbox" => Some("input"),
+        "searchbox" => Some("input[type='search']"),
+        "checkbox" => Some("input[type='checkbox']"),
+        "radio" => Some("input[type='radio']"),
+        "slider" => Some("input[type='range']"),
+        "spinbutton" => Some("input[type='number']"),
+        "combobox" => Some("select"),
+        "switch" => Some("input[type='checkbox']"),
+        "tab" => Some("[role='tab']"),
+        "menuitem" => Some("[role='menuitem']"),
+        _ => None,
     }
+}
+
+/// Build multiple CSS selector candidates for an element ref.
+///
+/// The accessibility tree role doesn't always correspond to an explicit `[role]`
+/// attribute in the DOM — native HTML elements have implicit ARIA roles. We try
+/// multiple strategies in order of specificity.
+fn build_selectors_for_ref(elem_ref: &ElementRef) -> Vec<String> {
+    let mut selectors = Vec::with_capacity(4);
+    let escaped_name = elem_ref.name.as_ref().map(|n| n.replace('\'', "\\'"));
+
+    // Strategy 1: [role='X'][aria-label='Y'] — explicit ARIA attributes
+    if let Some(name) = &escaped_name {
+        selectors.push(format!("[role='{}'][aria-label='{name}']", elem_ref.role));
+    }
+
+    // Strategy 2: native tag + aria-label (e.g., button[aria-label='Submit'])
+    if let Some(tag) = role_to_native_tag(&elem_ref.role) {
+        if let Some(name) = &escaped_name {
+            selectors.push(format!("{tag}[aria-label='{name}']"));
+        }
+    }
+
+    // Strategy 3: native tag with text content match via XPath-style selector
+    // using the name as button/link text
+    if let Some(tag) = role_to_native_tag(&elem_ref.role) {
+        if let Some(name) = &escaped_name {
+            // Try title attribute as fallback
+            selectors.push(format!("{tag}[title='{name}']"));
+        }
+        // Tag-only fallback (least specific, may match multiple)
+        selectors.push(tag.to_string());
+    }
+
+    // Strategy 4: role-only fallback
+    selectors.push(format!("[role='{}']", elem_ref.role));
+
+    selectors
 }
 
 /// Extract target ID string from a Page.
