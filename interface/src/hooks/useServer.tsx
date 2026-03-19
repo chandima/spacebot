@@ -24,6 +24,10 @@ interface ServerContextValue {
 	setServerUrl: (url: string) => void;
 	/** Whether the server has been successfully reached at least once this session */
 	hasConnected: boolean;
+	/** Whether the app has fully bootstrapped (health check passed AND initial data loaded) */
+	hasBootstrapped: boolean;
+	/** Signal that bootstrap queries have completed (called by LiveContextProvider) */
+	onBootstrapped: () => void;
 	/** Whether the app is running inside Tauri */
 	isTauri: boolean;
 	/** Whether a sidecar binary is bundled (Tauri only) */
@@ -35,6 +39,8 @@ const ServerContext = createContext<ServerContextValue>({
 	state: "checking",
 	setServerUrl: () => {},
 	hasConnected: false,
+	hasBootstrapped: false,
+	onBootstrapped: () => {},
 	isTauri: false,
 	hasSidecar: false,
 });
@@ -43,28 +49,34 @@ export function useServer() {
 	return useContext(ServerContext);
 }
 
-/** Normalise a URL: strip trailing slash, ensure protocol. */
+/** Normalise a URL to its origin (scheme + host + port). Strips paths,
+ *  query strings, and fragments so desktop connections use a clean base. */
 function normalizeUrl(raw: string): string {
 	let url = raw.trim();
 	if (!url) return DEFAULT_SERVER_URL;
 	if (!/^https?:\/\//i.test(url)) url = `http://${url}`;
-	return url.replace(/\/+$/, "");
+	try {
+		return new URL(url).origin;
+	} catch {
+		return DEFAULT_SERVER_URL;
+	}
 }
 
 /** Check if we're inside a Tauri webview */
 const IS_TAURI = !!(window as any).__TAURI_INTERNALS__;
 
 async function checkHealth(baseUrl: string): Promise<boolean> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), 3000);
 	try {
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), 3000);
 		const response = await fetch(`${baseUrl}/api/health`, {
 			signal: controller.signal,
 		});
-		clearTimeout(timeout);
 		return response.ok;
 	} catch {
 		return false;
+	} finally {
+		clearTimeout(timeout);
 	}
 }
 
@@ -88,7 +100,10 @@ async function loadPersistedUrl(): Promise<string | null> {
 		try {
 			const { invoke } = await import("@tauri-apps/api/core");
 			const url = await invoke<string>("get_server_url");
-			if (url) return url;
+			// The Tauri command returns the default sentinel when nothing
+			// is stored. Treat it (and empty strings) as "not persisted"
+			// so we fall through to localStorage.
+			if (url && url !== DEFAULT_SERVER_URL) return url;
 		} catch {
 			// Fallback to localStorage
 		}
@@ -140,6 +155,8 @@ export function ServerProvider({ children }: { children: ReactNode }) {
 		sameOrigin ? "connected" : "checking",
 	);
 	const [hasConnected, setHasConnected] = useState(sameOrigin);
+	const [hasBootstrapped, setHasBootstrapped] = useState(sameOrigin);
+	const onBootstrapped = useCallback(() => setHasBootstrapped(true), []);
 	const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
 	// On mount, reconcile with Tauri-persisted URL (async)
@@ -194,6 +211,8 @@ export function ServerProvider({ children }: { children: ReactNode }) {
 				state,
 				setServerUrl,
 				hasConnected,
+				hasBootstrapped,
+				onBootstrapped,
 				isTauri: IS_TAURI,
 				hasSidecar: IS_TAURI, // sidecar is always bundled in Tauri builds
 			}}

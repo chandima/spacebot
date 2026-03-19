@@ -19,19 +19,20 @@ const queryClient = new QueryClient({
 
 /**
  * Inner shell: shows the connection screen until the server is
- * reachable, then renders the main app with live data.
+ * reachable and initial data has loaded, then renders the main app.
  */
 function AppShell() {
-	const { state, hasConnected } = useServer();
+	const { state, hasBootstrapped, onBootstrapped } = useServer();
 
-	// Show connection screen if we've never connected, or if we lost
-	// connection before any data was loaded.
-	if (state !== "connected" && !hasConnected) {
+	// Show connection screen until we've both connected AND loaded
+	// initial data. This prevents flashing the main shell before
+	// LiveContextProvider's bootstrap queries complete.
+	if (state !== "connected" && !hasBootstrapped) {
 		return <ConnectionScreen />;
 	}
 
 	return (
-		<LiveContextProvider>
+		<LiveContextProvider onBootstrapped={onBootstrapped}>
 			<RouterProvider router={router} />
 		</LiveContextProvider>
 	);

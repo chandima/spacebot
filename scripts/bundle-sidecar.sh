@@ -15,7 +15,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BINARIES_DIR="$REPO_ROOT/desktop/src-tauri/binaries"
 
 # Determine Rust target triple
-TARGET_TRIPLE="${TAURI_ENV_TARGET_TRIPLE:-$(rustc -vV | awk '/^host:/ {print $2}')}"
+HOST_TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')"
+TARGET_TRIPLE="${TAURI_ENV_TARGET_TRIPLE:-$HOST_TRIPLE}"
 
 # Build mode
 BUILD_MODE="release"
@@ -26,10 +27,13 @@ if [[ "${1:-}" != "--release" ]]; then
 fi
 
 echo "Building spacebot ($BUILD_MODE) for $TARGET_TRIPLE..."
-cargo build $CARGO_FLAGS --manifest-path "$REPO_ROOT/Cargo.toml"
-
-# Source binary path
-SRC_BIN="$REPO_ROOT/target/$BUILD_MODE/spacebot"
+if [[ "$TARGET_TRIPLE" != "$HOST_TRIPLE" ]]; then
+    cargo build $CARGO_FLAGS --target "$TARGET_TRIPLE" --manifest-path "$REPO_ROOT/Cargo.toml"
+    SRC_BIN="$REPO_ROOT/target/$TARGET_TRIPLE/$BUILD_MODE/spacebot"
+else
+    cargo build $CARGO_FLAGS --manifest-path "$REPO_ROOT/Cargo.toml"
+    SRC_BIN="$REPO_ROOT/target/$BUILD_MODE/spacebot"
+fi
 
 # Destination with target triple suffix (Tauri convention)
 mkdir -p "$BINARIES_DIR"

@@ -16,7 +16,7 @@
         {
           "name": "binaries/spacebot",
           "sidecar": true,
-          "args": true
+          "args": ["start", "--foreground"]
         }
       ]
     }

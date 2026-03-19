@@ -46,6 +46,7 @@ export function ConnectionScreen() {
 				"start",
 				"--foreground",
 			]);
+			let sawReady = false;
 
 			command.on("error", (error: string) => {
 				setSidecarState("error");
@@ -53,15 +54,22 @@ export function ConnectionScreen() {
 			});
 
 			command.on("close", (data: { code: number | null }) => {
-				if (data.code !== 0 && data.code !== null) {
+				if (!sawReady || data.code === null || data.code !== 0) {
 					setSidecarState("error");
-					setSidecarError(`Process exited with code ${data.code}`);
+					setSidecarError(
+						data.code === null
+							? "Process exited before the HTTP server became ready"
+							: `Process exited with code ${data.code}`,
+					);
+					return;
 				}
+				setSidecarState("idle");
 			});
 
 			command.stdout.on("data", (line: string) => {
 				// Look for the "HTTP server listening" log line
 				if (line.includes("HTTP server listening")) {
+					sawReady = true;
 					setSidecarState("running");
 					// Point the app at localhost
 					setServerUrl("http://localhost:19898");

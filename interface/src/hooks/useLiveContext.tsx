@@ -1,4 +1,4 @@
-import { createContext, useContext, useCallback, useRef, useState, useMemo, type ReactNode } from "react";
+import { createContext, useContext, useCallback, useEffect, useRef, useState, useMemo, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type AgentMessageEvent, type ChannelInfo, type ToolStartedEvent, type ToolCompletedEvent, type TranscriptStep, type OpenCodePart, type OpenCodePartUpdatedEvent, type WorkerTextEvent } from "@/api/client";
 import { generateId } from "@/lib/id";
@@ -47,7 +47,7 @@ export function useLiveContext() {
 /** Duration (ms) an edge stays "active" after a message flows through it. */
 const LINK_ACTIVE_DURATION = 3000;
 
-export function LiveContextProvider({ children }: { children: ReactNode }) {
+export function LiveContextProvider({ children, onBootstrapped }: { children: ReactNode; onBootstrapped?: () => void }) {
 	const queryClient = useQueryClient();
 
 	const { data: channelsData } = useQuery({
@@ -304,6 +304,16 @@ export function LiveContextProvider({ children }: { children: ReactNode }) {
 
 	// Consider app "ready" once we have any data loaded
 	const hasData = channels.length > 0 || channelsData !== undefined;
+
+	// Signal bootstrap completion to ServerProvider so the connection
+	// screen is dismissed only after initial queries have resolved.
+	const bootstrappedRef = useRef(false);
+	useEffect(() => {
+		if (hasData && !bootstrappedRef.current) {
+			bootstrappedRef.current = true;
+			onBootstrapped?.();
+		}
+	}, [hasData, onBootstrapped]);
 
 	return (
 		<LiveContext.Provider value={{ liveStates, channels, connectionState, hasData, loadOlderMessages, activeLinks, activeWorkers, workerEventVersion, taskEventVersion, liveTranscripts, liveOpenCodeParts }}>

@@ -6,18 +6,20 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 /// Resolve the path to the connection settings file in the app data directory.
-fn settings_path(app: &tauri::AppHandle) -> PathBuf {
+fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
-        .expect("failed to resolve app data dir");
-    dir.join("connection.json")
+        .map_err(|error| format!("failed to resolve app data dir: {error}"))?;
+    Ok(dir.join("connection.json"))
 }
 
 /// Read the saved server URL, or return the default.
 #[tauri::command]
 fn get_server_url(app: tauri::AppHandle) -> String {
-    let path = settings_path(&app);
+    let Ok(path) = settings_path(&app) else {
+        return "http://localhost:19898".to_string();
+    };
     if let Ok(contents) = fs::read_to_string(&path) {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) {
             if let Some(url) = value.get("server_url").and_then(|v| v.as_str()) {
@@ -31,12 +33,13 @@ fn get_server_url(app: tauri::AppHandle) -> String {
 /// Persist the server URL to disk.
 #[tauri::command]
 fn set_server_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    let path = settings_path(&app);
+    let path = settings_path(&app)?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     let value = serde_json::json!({ "server_url": url });
-    fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).map_err(|e| e.to_string())?;
+    let contents = serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?;
+    fs::write(&path, contents).map_err(|error| error.to_string())?;
     Ok(())
 }
 
