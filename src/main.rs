@@ -272,6 +272,7 @@ fn forward_sse_event(
     agent_id: &str,
     channel_id: &str,
     response: &spacebot::OutboundResponse,
+    message_id: Option<&str>,
 ) {
     match response {
         spacebot::OutboundResponse::Text(text)
@@ -281,6 +282,7 @@ fn forward_sse_event(
                 .send(spacebot::api::ApiEvent::OutboundMessage {
                     agent_id: agent_id.to_string(),
                     channel_id: channel_id.to_string(),
+                    message_id: message_id.map(str::to_string),
                     text: text.clone(),
                 })
                 .ok();
@@ -2030,12 +2032,17 @@ async fn run(
                     let sse_channel_id = conversation_id.clone();
                     let outbound_handle = tokio::spawn(async move {
                         while let Some(routed) = response_rx.recv().await {
-                            let spacebot::RoutedResponse { response, target } = routed;
+                            let spacebot::RoutedResponse {
+                                response,
+                                target,
+                                message_id,
+                            } = routed;
                             forward_sse_event(
                                 &api_event_tx,
                                 &sse_agent_id,
                                 &sse_channel_id,
                                 &response,
+                                message_id.as_deref(),
                             );
                             route_outbound(&messaging_for_outbound, &target, response).await;
                         }
@@ -2200,8 +2207,18 @@ async fn run(
                     let sse_channel_id = conversation_id.clone();
                     let outbound_handle = tokio::spawn(async move {
                         while let Some(routed) = response_rx.recv().await {
-                            let spacebot::RoutedResponse { response, target } = routed;
-                            forward_sse_event(&api_event_tx, &sse_agent_id, &sse_channel_id, &response);
+                            let spacebot::RoutedResponse {
+                                response,
+                                target,
+                                message_id,
+                            } = routed;
+                            forward_sse_event(
+                                &api_event_tx,
+                                &sse_agent_id,
+                                &sse_channel_id,
+                                &response,
+                                message_id.as_deref(),
+                            );
                             route_outbound(&messaging_for_outbound, &target, response).await;
                         }
                         tracing::debug!(

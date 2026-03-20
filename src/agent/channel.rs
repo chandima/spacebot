@@ -1536,9 +1536,9 @@ impl Channel {
         // Generate spoken response for voice-enabled channels (batched path).
         let replied = replied_flag.load(std::sync::atomic::Ordering::Relaxed);
         if replied
-            && let Some(full_text) = replied_text.lock().ok().and_then(|mut slot| slot.take())
+            && let Some(replied_message) = replied_text.lock().ok().and_then(|mut slot| slot.take())
         {
-            self.maybe_generate_spoken_response(full_text);
+            self.maybe_generate_spoken_response(replied_message);
         }
 
         // Check compaction
@@ -1915,9 +1915,9 @@ impl Channel {
         // generate a spoken response in the background (fire-and-forget).
         let replied = replied_flag.load(std::sync::atomic::Ordering::Relaxed);
         if replied
-            && let Some(full_text) = replied_text.lock().ok().and_then(|mut slot| slot.take())
+            && let Some(replied_message) = replied_text.lock().ok().and_then(|mut slot| slot.take())
         {
-            self.maybe_generate_spoken_response(full_text);
+            self.maybe_generate_spoken_response(replied_message);
         }
 
         // Safety-net: in quiet mode, explicit mention/reply should never be dropped silently.
@@ -2558,7 +2558,7 @@ impl Channel {
 
     /// Fire-and-forget: if voice output is configured, generate a short spoken
     /// summary of the reply and broadcast it as a `SpokenResponse` event.
-    fn maybe_generate_spoken_response(&self, full_text: String) {
+    fn maybe_generate_spoken_response(&self, replied_message: crate::tools::reply::RepliedMessage) {
         let rc = &self.deps.runtime_config;
         let voicebox_url = rc.voicebox_url.load();
         // Only generate spoken responses when a Voicebox URL is configured.
@@ -2579,6 +2579,10 @@ impl Channel {
         let model_name = routing.channel.clone();
 
         tokio::spawn(async move {
+            let crate::tools::reply::RepliedMessage {
+                text: full_text,
+                message_id,
+            } = replied_message;
             let recent_spoken_snapshot: Vec<String> = recent_spoken_responses
                 .read()
                 .await
@@ -2639,6 +2643,7 @@ impl Channel {
                         .send(crate::ProcessEvent::SpokenResponse {
                             agent_id,
                             channel_id,
+                            message_id,
                             spoken_text,
                             full_text,
                         })

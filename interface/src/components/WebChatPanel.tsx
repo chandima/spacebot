@@ -181,7 +181,7 @@ export function WebChatPanel({agentId}: WebChatPanelProps) {
 	const {sessionId, isSending, error, sendMessage} = useWebChat(agentId);
 	const {liveStates} = useLiveContext();
 	const [input, setInput] = useState("");
-	const [spokenBlocks, setSpokenBlocks] = useState<Array<{id: string; fullText: string; spokenText: string}>>([]);
+	const [spokenBlocks, setSpokenBlocks] = useState<Array<{id: string; messageId: string; fullText: string; spokenText: string}>>([]);
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 
 	const liveState = liveStates[sessionId];
@@ -194,14 +194,13 @@ export function WebChatPanel({agentId}: WebChatPanelProps) {
 		const event = data as SpokenResponseEvent;
 		if (event.channel_id !== sessionId) return;
 		setSpokenBlocks((current) => {
-			const duplicate = current.some(
-				(item) => item.spokenText === event.spoken_text && item.fullText === event.full_text,
-			);
+			const duplicate = current.some((item) => item.messageId === event.message_id);
 			if (duplicate) return current;
 			return [
 				...current,
 				{
-					id: `${event.channel_id}:${current.length}:${event.spoken_text}`,
+					id: event.message_id,
+					messageId: event.message_id,
 					fullText: event.full_text,
 					spokenText: event.spoken_text,
 				},
@@ -250,7 +249,7 @@ export function WebChatPanel({agentId}: WebChatPanelProps) {
 						if (item.type !== "message") return null;
 						const spokenMatch =
 							item.role === "assistant"
-								? spokenBlocks.find((block) => block.fullText === item.content)
+								? spokenBlocks.find((block) => block.messageId === item.id)
 								: null;
 						return (
 							<div key={item.id}>

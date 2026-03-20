@@ -55,6 +55,7 @@ export interface OutboundMessageEvent {
 	type: "outbound_message";
 	agent_id: string;
 	channel_id: string;
+	message_id?: string | null;
 	text: string;
 }
 
@@ -183,6 +184,7 @@ export interface SpokenResponseEvent {
 	type: "spoken_response";
 	agent_id: string;
 	channel_id: string;
+	message_id: string;
 	spoken_text: string;
 	full_text: string;
 }

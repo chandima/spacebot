@@ -51,6 +51,7 @@ export function useTtsPlayback(): UseTtsPlaybackReturn {
 	const analyserRef = useRef<AnalyserNode | null>(null);
 	const animationFrameRef = useRef<number>(0);
 	const playbackDoneRef = useRef<(() => void) | null>(null);
+	const requestIdRef = useRef(0);
 	const smoothedLevelRef = useRef(0);
 	const smoothedSpectrumRef = useRef<number[]>(
 		Array.from({length: SPECTRUM_BAR_COUNT}, () => 0),
@@ -66,6 +67,7 @@ export function useTtsPlayback(): UseTtsPlaybackReturn {
 	}, []);
 
 	const stop = useCallback(() => {
+		requestIdRef.current += 1;
 		if (sourceRef.current) {
 			try {
 				sourceRef.current.stop();
@@ -86,10 +88,36 @@ export function useTtsPlayback(): UseTtsPlaybackReturn {
 
 		if (!text.trim()) return;
 
+		const requestId = ++requestIdRef.current;
+		const isCurrentRequest = () => requestIdRef.current === requestId;
+		const abandonIfStale = (source?: AudioBufferSourceNode, analyser?: AnalyserNode) => {
+			if (isCurrentRequest()) {
+				return false;
+			}
+			if (source) {
+				try {
+					source.stop();
+				} catch {
+					// no-op: source was never started or already stopped
+				}
+			}
+			if (sourceRef.current === source) {
+				sourceRef.current = null;
+			}
+			if (analyserRef.current === analyser) {
+				analyserRef.current = null;
+			}
+			playbackDoneRef.current = null;
+			stopMetering();
+			setState("idle");
+			return true;
+		};
+
 		setState("loading");
 
 		try {
 			const audioBuffer = await api.ttsGenerate(text, {agentId, profileId});
+			if (abandonIfStale()) return;
 
 			// Decode the audio data
 			if (!audioContextRef.current || audioContextRef.current.state === "closed") {
@@ -98,9 +126,11 @@ export function useTtsPlayback(): UseTtsPlaybackReturn {
 			const context = audioContextRef.current;
 			if (context.state === "suspended") {
 				await context.resume();
+				if (abandonIfStale()) return;
 			}
 
 			const decoded = await context.decodeAudioData(audioBuffer);
+			if (abandonIfStale()) return;
 
 			// Play the audio
 			const source = context.createBufferSource();
@@ -138,10 +168,19 @@ export function useTtsPlayback(): UseTtsPlaybackReturn {
 				animationFrameRef.current = requestAnimationFrame(tick);
 			};
 			tick();
+			if (abandonIfStale(source, analyser)) return;
 
 			await new Promise<void>((resolve) => {
+				if (abandonIfStale(source, analyser)) {
+					resolve();
+					return;
+				}
 				playbackDoneRef.current = resolve;
 				source.onended = () => {
+					if (!isCurrentRequest()) {
+						resolve();
+						return;
+					}
 					sourceRef.current = null;
 					playbackDoneRef.current = null;
 					stopMetering();
@@ -149,10 +188,17 @@ export function useTtsPlayback(): UseTtsPlaybackReturn {
 					resolve();
 				};
 
+				if (abandonIfStale(source, analyser)) {
+					resolve();
+					return;
+				}
 				source.start();
 				setState("playing");
 			});
 		} catch (error) {
+			if (!isCurrentRequest()) {
+				return;
+			}
 			console.error("TTS playback failed:", error);
 			playbackDoneRef.current = null;
 			stopMetering();

@@ -1,4 +1,4 @@
-import {useState, useRef, useCallback} from "react";
+import {useState, useRef, useCallback, useEffect} from "react";
 
 export type RecordingState = "idle" | "recording" | "stopping";
 
@@ -76,6 +76,24 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
 		smoothedSpectrumRef.current = Array.from({length: SPECTRUM_BAR_COUNT}, () => 0);
 		setSpectrumLevels(smoothedSpectrumRef.current);
 	}, []);
+
+	useEffect(() => {
+		return () => {
+			const recorder = mediaRecorderRef.current;
+			mediaRecorderRef.current = null;
+			if (recorder && recorder.state !== "inactive") {
+				recorder.onstop = null;
+				try {
+					recorder.stop();
+				} catch {
+					// no-op: recorder already stopped during teardown
+				}
+			}
+			resolveStopRef.current?.(null);
+			resolveStopRef.current = null;
+			cleanupAudioGraph();
+		};
+	}, [cleanupAudioGraph]);
 
 	const startRecording = useCallback(async () => {
 		if (state !== "idle") return;
@@ -158,6 +176,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
 			};
 
 			recorder.onstop = () => {
+				mediaRecorderRef.current = null;
 				const blob = new Blob(chunksRef.current, {type: mimeType});
 				chunksRef.current = [];
 

@@ -157,6 +157,7 @@ pub enum ApiEvent {
     OutboundMessage {
         agent_id: String,
         channel_id: String,
+        message_id: Option<String>,
         text: String,
     },
     /// Typing indicator state change.
@@ -283,6 +284,7 @@ pub enum ApiEvent {
     SpokenResponse {
         agent_id: String,
         channel_id: String,
+        message_id: String,
         spoken_text: String,
         full_text: String,
     },
@@ -681,6 +683,7 @@ impl ApiState {
                             }
                             ProcessEvent::SpokenResponse {
                                 channel_id,
+                                message_id,
                                 spoken_text,
                                 full_text,
                                 ..
@@ -689,6 +692,7 @@ impl ApiState {
                                     .send(ApiEvent::SpokenResponse {
                                         agent_id: agent_id.clone(),
                                         channel_id: channel_id.to_string(),
+                                        message_id: message_id.clone(),
                                         spoken_text: spoken_text.clone(),
                                         full_text: full_text.clone(),
                                     })
