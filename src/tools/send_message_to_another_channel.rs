@@ -196,45 +196,12 @@ impl Tool for SendMessageTool {
             // If explicit prefix returned default "signal" adapter, try to resolve
             // to a specific named instance for correct routing.
             if target.adapter == "signal" {
-                // Look up registered Signal adapters to determine resolution strategy.
-                let all_signal_adapters: Vec<String> = self
-                    .messaging_manager
-                    .adapter_names()
-                    .await
-                    .into_iter()
-                    .filter(|name| name == "signal" || name.starts_with("signal:"))
-                    .collect();
-
-                let has_default_signal = all_signal_adapters.iter().any(|name| name == "signal");
-                let named_adapters: Vec<&str> = all_signal_adapters
-                    .iter()
-                    .filter(|name| name.starts_with("signal:"))
-                    .map(|s| s.as_str())
-                    .collect();
-
-                if let Some(current_adapter) = self.current_adapter.as_ref().filter(|adapter| {
-                    adapter.starts_with("signal:") && all_signal_adapters.contains(adapter)
-                }) {
-                    // In a named Signal conversation — only retarget if no default adapter.
-                    // When a default "signal" adapter exists, the explicit "signal:" prefix
-                    // should use it (not the current named adapter), preserving user intent.
-                    if !has_default_signal {
-                        target.adapter = current_adapter.clone();
-                    }
-                } else if has_default_signal {
-                    // Not in a Signal conversation (e.g., cron context) but default exists.
-                    // Leave target.adapter as "signal" so broadcast() uses the default.
-                } else if named_adapters.len() == 1 {
-                    // No default, but exactly one named adapter - use it
-                    target.adapter = named_adapters[0].to_string();
-                } else if named_adapters.len() > 1 {
-                    // Multiple named adapters and no default - ambiguity error
-                    return Err(SendMessageError(format!(
-                        "Multiple Signal adapters are configured ({}). Please specify which instance to use by targeting 'signal:<instance_name>:<target>' instead of 'signal:<target>'.",
-                        named_adapters.join(", ")
-                    )));
-                }
-                // If 0 adapters, leave as "signal" and let broadcast() fail with appropriate error
+                target.adapter = resolve_signal_adapter(
+                    &self.messaging_manager,
+                    self.current_adapter.as_deref(),
+                )
+                .await
+                .map_err(SendMessageError)?;
             }
 
             self.messaging_manager
@@ -432,6 +399,54 @@ fn parse_explicit_signal_prefix(raw: &str) -> Option<crate::messaging::target::B
     }
 
     None
+}
+
+/// Resolve the Signal adapter to use for an explicit "signal:" target.
+///
+/// Looks up registered Signal adapters and returns:
+/// - "signal" if a default adapter exists
+/// - The named instance name if exactly one named adapter exists and no default
+/// - An error if multiple named adapters exist and no default (ambiguous)
+///
+/// When `current_adapter` is a named Signal instance (e.g., "signal:work") and
+/// no default adapter exists, it will be used as the target adapter.
+pub async fn resolve_signal_adapter(
+    messaging_manager: &crate::messaging::MessagingManager,
+    current_adapter: Option<&str>,
+) -> Result<String, String> {
+    let all_signal_adapters: Vec<String> = messaging_manager
+        .adapter_names()
+        .await
+        .into_iter()
+        .filter(|name| name == "signal" || name.starts_with("signal:"))
+        .collect();
+
+    let has_default_signal = all_signal_adapters.iter().any(|name| name == "signal");
+    let named_adapters: Vec<&str> = all_signal_adapters
+        .iter()
+        .filter(|name| name.starts_with("signal:"))
+        .map(|s| s.as_str())
+        .collect();
+
+    if let Some(adapter) = current_adapter.filter(|adapter| {
+        adapter.starts_with("signal:") && all_signal_adapters.iter().any(|a| a == adapter)
+    }) {
+        if !has_default_signal {
+            return Ok(adapter.to_string());
+        }
+        // has_default_signal is true — fall through to return "signal"
+    } else if !has_default_signal && named_adapters.len() == 1 {
+        // No default, but exactly one named adapter - use it
+        return Ok(named_adapters[0].to_string());
+    } else if !has_default_signal && named_adapters.len() > 1 {
+        // Multiple named adapters and no default - ambiguity error
+        return Err(format!(
+            "Multiple Signal adapters are configured ({}). Please specify which instance to use by targeting 'signal:<instance_name>:<target>' instead of 'signal:<target>'.",
+            named_adapters.join(", ")
+        ));
+    }
+    // has_default_signal is true OR no adapters at all — return default "signal"
+    Ok("signal".to_string())
 }
 
 /// Parse implicit Signal shorthands - only in Signal conversations.
@@ -733,4 +748,28 @@ mod tests {
             .expect_err("should be validation error");
         assert!(error.contains("requires an ID"), "{error}");
     }
+
+    // Tests for resolve_signal_adapter
+    // Note: These tests use a mock messaging manager to test the resolution logic
+
+    #[tokio::test]
+    async fn resolve_signal_adapter_returns_signal_when_no_adapters() {
+        let manager = crate::messaging::MessagingManager::new();
+        // No adapters registered - should return "signal" as default
+        // This lets broadcast() fail with appropriate error if no adapters exist
+        let result = super::resolve_signal_adapter(&manager, None).await;
+        assert_eq!(result.unwrap(), "signal");
+    }
+
+    #[tokio::test]
+    async fn resolve_signal_adapter_ignores_current_if_not_registered() {
+        let manager = crate::messaging::MessagingManager::new();
+        // When current_adapter is provided but not registered in manager,
+        // it falls through to "signal" since we can't verify the adapter exists
+        let result = super::resolve_signal_adapter(&manager, Some("signal:work")).await;
+        assert_eq!(result.unwrap(), "signal");
+    }
+
+    // TODO: Add test for resolve_signal_adapter ambiguity case once MessagingManager
+    // supports registering mock adapters or a test helper is available.
 }

@@ -3460,7 +3460,11 @@ async fn initialize_agents(
         }
 
         // Store cron tool on deps so each channel can register it on its own tool server
-        let cron_tool = spacebot::tools::CronTool::new(store.clone(), scheduler.clone());
+        let cron_tool = spacebot::tools::CronTool::new(
+            store.clone(),
+            scheduler.clone(),
+            messaging_manager.clone(),
+        );
         agent.deps.cron_tool = Some(cron_tool);
 
         cron_stores_map.insert(agent_id.to_string(), store);

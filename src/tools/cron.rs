@@ -2,6 +2,7 @@
 
 use crate::cron::scheduler::{CronConfig, Scheduler};
 use crate::cron::store::CronStore;
+use crate::messaging::MessagingManager;
 use rig::completion::ToolDefinition;
 use rig::tool::Tool;
 use schemars::JsonSchema;
@@ -16,19 +17,36 @@ const MIN_CRON_INTERVAL_SECS: u64 = 60;
 const MAX_CRON_PROMPT_LENGTH: usize = 10_000;
 
 /// Tool for managing cron jobs (scheduled recurring tasks).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CronTool {
     store: Arc<CronStore>,
     scheduler: Arc<Scheduler>,
+    messaging_manager: Arc<MessagingManager>,
     default_delivery_target: Option<String>,
     current_adapter: Option<String>,
 }
 
+impl std::fmt::Debug for CronTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CronTool")
+            .field("store", &self.store)
+            .field("scheduler", &self.scheduler)
+            .field("default_delivery_target", &self.default_delivery_target)
+            .field("current_adapter", &self.current_adapter)
+            .finish_non_exhaustive()
+    }
+}
+
 impl CronTool {
-    pub fn new(store: Arc<CronStore>, scheduler: Arc<Scheduler>) -> Self {
+    pub fn new(
+        store: Arc<CronStore>,
+        scheduler: Arc<Scheduler>,
+        messaging_manager: Arc<MessagingManager>,
+    ) -> Self {
         Self {
             store,
             scheduler,
+            messaging_manager,
             default_delivery_target: None,
             current_adapter: None,
         }
@@ -221,10 +239,78 @@ impl CronTool {
         // not when the user explicitly provided one. An explicit "signal:uuid:xxx"
         // targets the default adapter by design; the default fallback from the
         // conversation context should be rewritten for the named instance.
+        //
+        // For explicit signal: targets, resolve the adapter using the same logic as
+        // send_message_to_another_channel to handle deployments with only named instances.
         let delivery_target = if explicit_delivery_target.is_some() {
-            delivery_target
-        } else {
+            let parsed_delivery_target = crate::messaging::target::parse_delivery_target(
+                &delivery_target,
+            )
+            .ok_or_else(|| CronError(format!("invalid 'delivery_target': '{delivery_target}'")))?;
+            let should_resolve_signal_default = parsed_delivery_target.adapter == "signal";
+
+            if should_resolve_signal_default {
+                let target_part = parsed_delivery_target.target;
+                let resolved_adapter =
+                    crate::tools::send_message_to_another_channel::resolve_signal_adapter(
+                        &self.messaging_manager,
+                        self.current_adapter.as_deref(),
+                    )
+                    .await
+                    .map_err(|e| CronError(format!("Failed to resolve Signal adapter: {e}")))?;
+                if resolved_adapter == "signal"
+                    && !self.messaging_manager.has_adapter("signal").await
+                {
+                    return Err(CronError(
+                        "No Signal adapter running. Cannot create cron with Signal delivery target."
+                            .into(),
+                    ));
+                }
+                format!("{resolved_adapter}:{target_part}")
+            } else {
+                if !self
+                    .messaging_manager
+                    .has_adapter(&parsed_delivery_target.adapter)
+                    .await
+                {
+                    return Err(CronError(if parsed_delivery_target.adapter.contains(':') {
+                        format!("No '{}' adapter running.", parsed_delivery_target.adapter)
+                    } else {
+                        format!(
+                            "No '{}' adapter running. Use '{}:<instance>:...' to target a specific instance.",
+                            parsed_delivery_target.adapter, parsed_delivery_target.adapter
+                        )
+                    }));
+                }
+                delivery_target
+            }
+        } else if let Some(current) = &self.current_adapter
+            && self.messaging_manager.has_adapter(current).await
+        {
             normalize_delivery_target(&delivery_target, &self.current_adapter)
+        } else {
+            // Validate the raw delivery_target before persisting — the adapter may have
+            // been captured earlier but is no longer available, or was never valid.
+            let parsed_delivery_target = crate::messaging::target::parse_delivery_target(
+                &delivery_target,
+            )
+            .ok_or_else(|| CronError(format!("invalid 'delivery_target': '{delivery_target}'")))?;
+
+            if !self
+                .messaging_manager
+                .has_adapter(&parsed_delivery_target.adapter)
+                .await
+            {
+                return Err(CronError(if parsed_delivery_target.adapter.contains(':') {
+                    format!("No '{}' adapter running.", parsed_delivery_target.adapter)
+                } else {
+                    format!(
+                        "No '{}' adapter running. Use '{}:<instance>:...' to target a specific instance.",
+                        parsed_delivery_target.adapter, parsed_delivery_target.adapter
+                    )
+                }));
+            }
+            delivery_target
         };
 
         // Validate cron job ID: alphanumeric, hyphens, underscores only
@@ -581,5 +667,24 @@ mod tests {
             &Some("telegram:bot1".to_string()),
         );
         assert_eq!(result, "telegram:bot1:userid:789");
+    }
+
+    #[test]
+    fn test_parse_signal_already_qualified_not_default() {
+        // Already-qualified Signal targets (signal:<instance>:...) should not be
+        // treated as default "signal" adapter. parse_delivery_target extracts
+        // the adapter correctly.
+        let parsed = crate::messaging::target::parse_delivery_target("signal:work:+15551234567");
+        assert!(parsed.is_some());
+        let target = parsed.unwrap();
+        assert_eq!(target.adapter, "signal:work");
+        assert_eq!(target.target, "+15551234567");
+
+        // This is different from bare signal: prefix which uses adapter "signal"
+        let parsed_default = crate::messaging::target::parse_delivery_target("signal:+15551234567");
+        assert!(parsed_default.is_some());
+        let target_default = parsed_default.unwrap();
+        assert_eq!(target_default.adapter, "signal");
+        assert_eq!(target_default.target, "+15551234567");
     }
 }
