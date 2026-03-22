@@ -7,6 +7,13 @@ use tauri::Emitter;
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
 
+// ── Voice overlay dimensions ─────────────────────────────────────────────
+// Collapsed = pill only; expanded = pill + transcript panel.
+const OVERLAY_WIDTH: f64 = 520.0;
+const OVERLAY_HEIGHT_COLLAPSED: f64 = 100.0;
+const OVERLAY_HEIGHT_EXPANDED: f64 = 460.0;
+const OVERLAY_BOTTOM_MARGIN: f64 = 40.0;
+
 /// Resolve the path to the connection settings file in the app data directory.
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
@@ -49,6 +56,41 @@ fn set_server_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
 #[tauri::command]
 fn toggle_voice_overlay(app: tauri::AppHandle) -> Result<(), String> {
     toggle_overlay(&app);
+    Ok(())
+}
+
+/// Resize the voice overlay window between collapsed (pill-only) and expanded
+/// (pill + transcript) states. Adjusts both size and Y position so the pill
+/// stays pinned to the bottom of the screen.
+#[tauri::command]
+fn resize_voice_overlay(app: tauri::AppHandle, expanded: bool) -> Result<(), String> {
+    let Some(overlay) = app.get_webview_window("voice-overlay") else {
+        return Ok(());
+    };
+
+    let monitor = app.primary_monitor().ok().flatten();
+    let screen_width = monitor
+        .as_ref()
+        .map(|m| m.size().width as f64 / m.scale_factor())
+        .unwrap_or(1920.0);
+    let screen_height = monitor
+        .as_ref()
+        .map(|m| m.size().height as f64 / m.scale_factor())
+        .unwrap_or(1080.0);
+
+    let target_height = if expanded {
+        OVERLAY_HEIGHT_EXPANDED
+    } else {
+        OVERLAY_HEIGHT_COLLAPSED
+    };
+    let x = (screen_width - OVERLAY_WIDTH) / 2.0;
+    let y = screen_height - target_height - OVERLAY_BOTTOM_MARGIN;
+
+    use tauri::LogicalSize;
+    use tauri::LogicalPosition;
+    let _ = overlay.set_size(LogicalSize::new(OVERLAY_WIDTH, target_height));
+    let _ = overlay.set_position(LogicalPosition::new(x, y));
+
     Ok(())
 }
 
@@ -96,10 +138,10 @@ fn create_overlay_window(app: &tauri::AppHandle) {
         .map(|m| m.size().height as f64 / m.scale_factor())
         .unwrap_or(1080.0);
 
-    let overlay_width = 520.0;
-    let overlay_height = 460.0;
-    let x = (screen_width - overlay_width) / 2.0;
-    let y = screen_height - overlay_height - 40.0; // 40px from bottom edge
+    // Start collapsed (pill-only). The frontend calls resize_voice_overlay
+    // when the user expands the transcript panel.
+    let x = (screen_width - OVERLAY_WIDTH) / 2.0;
+    let y = screen_height - OVERLAY_HEIGHT_COLLAPSED - OVERLAY_BOTTOM_MARGIN;
 
     match WebviewWindowBuilder::new(
         app,
@@ -107,7 +149,7 @@ fn create_overlay_window(app: &tauri::AppHandle) {
         tauri::WebviewUrl::App("/overlay".into()),
     )
     .title("Voice")
-    .inner_size(overlay_width, overlay_height)
+    .inner_size(OVERLAY_WIDTH, OVERLAY_HEIGHT_COLLAPSED)
     .position(x, y)
     .decorations(false)
     .shadow(false)
@@ -196,6 +238,7 @@ fn main() {
             get_server_url,
             set_server_url,
             toggle_voice_overlay,
+            resize_voice_overlay,
         ])
         .setup(|app| {
             // Apply macOS titlebar style (invisible toolbar for traffic light padding)

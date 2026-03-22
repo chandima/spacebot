@@ -13,6 +13,27 @@ const Orb = lazy(() => import("@/components/Orb"));
 
 type VoiceState = "idle" | "recording" | "processing" | "speaking";
 
+// ── Overlay window resize ────────────────────────────────────────────────
+
+const IS_TAURI = !!(window as any).__TAURI_INTERNALS__;
+
+/**
+ * Ask the Tauri host to resize the overlay window between collapsed (pill-only)
+ * and expanded (pill + transcript) states. The Rust command handles both the
+ * size change and the Y-position adjustment so the pill stays bottom-pinned.
+ *
+ * In web/browser mode this is a no-op — the overlay is just an in-page route.
+ */
+async function resizeOverlayWindow(expanded: boolean): Promise<void> {
+	if (!IS_TAURI) return;
+	try {
+		const {invoke} = await import("@tauri-apps/api/core");
+		await invoke("resize_voice_overlay", {expanded});
+	} catch (error) {
+		console.warn("overlay resize failed:", error);
+	}
+}
+
 interface SpokenResponseEvent {
 	agent_id: string;
 	channel_id: string;
@@ -30,6 +51,11 @@ export function Overlay() {
 	const [statusText, setStatusText] = useState("Press Option+Shift+Space to talk");
 	const [, setSpokenText] = useState<string | null>(null);
 	const [transcript, setTranscript] = useState<Array<{role: string; text: string}>>([]);
+
+	const setExpandedAndResize = useCallback((next: boolean) => {
+		setExpanded(next);
+		void resizeOverlayWindow(next);
+	}, []);
 
 	const sessionId = getPortalChatSessionId(agentId);
 	const {
@@ -297,12 +323,12 @@ export function Overlay() {
 									</option>
 								))}
 							</select>
-							<button
-								onClick={() => setExpanded(false)}
-								className="text-tiny text-ink-faint hover:text-ink"
-							>
-								Collapse
-							</button>
+						<button
+							onClick={() => setExpandedAndResize(false)}
+							className="text-tiny text-ink-faint hover:text-ink"
+						>
+							Collapse
+						</button>
 						</div>
 					</div>
 					{profilesQuery.isError && (
@@ -345,10 +371,10 @@ export function Overlay() {
 							? "border-violet-300/35 bg-violet-400/10"
 							: "border-white/10 bg-app-darkBox/95",
 				)}
-				data-tauri-drag-region
-				onClick={() => {
-					if (voiceState === "idle") setExpanded(!expanded);
-				}}
+			data-tauri-drag-region
+			onClick={() => {
+				if (voiceState === "idle") setExpandedAndResize(!expanded);
+			}}
 			>
 			<div
 				className={cx(
