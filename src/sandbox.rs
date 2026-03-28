@@ -266,6 +266,11 @@ impl Sandbox {
         self.config.load().mode == SandboxMode::Enabled
     }
 
+    /// Get the workspace directory path.
+    pub fn workspace(&self) -> &Path {
+        &self.workspace
+    }
+
     /// Update the sandbox allowlist with project root paths.
     ///
     /// Merges the given project root paths into the sandbox config alongside
