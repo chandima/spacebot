@@ -195,17 +195,25 @@ impl Scheduler {
             None
         };
 
-        {
+        let maybe_prev_job = {
             let mut jobs = self.jobs.write().await;
-            jobs.insert(config.id.clone(), job);
-        }
+            jobs.insert(config.id.clone(), job)
+        };
 
         if config.enabled
             && let Err(error) = self.ensure_job_next_run_at(&config.id, anchor).await
         {
             {
                 let mut jobs = self.jobs.write().await;
-                jobs.remove(&config.id);
+                // Restore previous job if one existed, otherwise remove the key
+                match maybe_prev_job {
+                    Some(prev_job) => {
+                        jobs.insert(config.id.clone(), prev_job);
+                    }
+                    None => {
+                        jobs.remove(&config.id);
+                    }
+                }
             }
 
             tracing::warn!(
@@ -474,6 +482,7 @@ impl Scheduler {
                     Ok(false) => continue,
                     Err(error) => {
                         tracing::warn!(cron_id = %job_id, %error, "failed to claim cron fire");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
                         continue;
                     }
                 }
@@ -666,21 +675,35 @@ impl Scheduler {
             }
 
             // Cold re-enable: job was disabled at startup so was never loaded into the scheduler.
-            // Reload from the store, insert, then start the timer.
+            // Reload from the store, insert with enabled=false first, initialize, then enable atomically.
             tracing::info!(cron_id = %job_id, "cold re-enable: reloading config from store");
             let config = self.context.store.load(job_id).await?.ok_or_else(|| {
                 crate::error::Error::Other(anyhow::anyhow!("cron job not found in store"))
             })?;
-            let mut job = cron_job_from_config(&config)?;
-            job.enabled = true;
+            let job = cron_job_from_config(&config)?;
 
+            // Insert disabled first to avoid orphaned enabled state if init fails
             {
                 let mut jobs = self.jobs.write().await;
                 jobs.insert(job_id.to_string(), job);
             }
 
-            self.ensure_job_next_run_at(job_id, None).await?;
+            // Initialize cursor and start timer before marking enabled
+            if let Err(error) = self.ensure_job_next_run_at(job_id, None).await {
+                // Clean up on failure - remove the partially inserted job
+                let mut jobs = self.jobs.write().await;
+                jobs.remove(job_id);
+                return Err(error);
+            }
             self.start_timer(job_id, None).await;
+
+            // Atomically enable the job after initialization succeeded
+            {
+                let mut jobs = self.jobs.write().await;
+                if let Some(j) = jobs.get_mut(job_id) {
+                    j.enabled = true;
+                }
+            }
             tracing::info!(cron_id = %job_id, "cron job cold-re-enabled and timer started");
             return Ok(());
         }
@@ -729,11 +752,18 @@ fn cron_job_from_config(config: &CronConfig) -> Result<CronJob> {
             config.delivery_target
         ))
     })?;
+    let cron_expr = normalize_cron_expr(config.cron_expr.clone())?;
+
+    if cron_expr.is_none() && config.interval_secs == 0 {
+        return Err(crate::error::Error::Other(anyhow::anyhow!(
+            "interval_secs must be > 0 when no cron_expr is provided"
+        )));
+    }
 
     Ok(CronJob {
         id: config.id.clone(),
         prompt: config.prompt.clone(),
-        cron_expr: normalize_cron_expr(config.cron_expr.clone())?,
+        cron_expr,
         interval_secs: config.interval_secs,
         delivery_target,
         active_hours: normalize_active_hours(config.active_hours),
