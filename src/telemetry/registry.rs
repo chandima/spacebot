@@ -177,11 +177,11 @@ pub struct Metrics {
 
     // -- Cron --
     /// Cron task executions.
-    /// Labels: agent_id, task_type, result.
+    /// Labels: agent_id, cron_id, result.
     pub cron_executions_total: IntCounterVec,
 
     /// Cron delivery outcomes.
-    /// Labels: agent_id, task_type, result.
+    /// Labels: agent_id, cron_id, result.
     pub cron_delivery_total: IntCounterVec,
 
     // -- Ingestion --
@@ -515,12 +515,12 @@ impl Metrics {
         // Cron (1)
         let cron_executions_total = IntCounterVec::new(
             Opts::new("spacebot_cron_executions_total", "Cron task executions"),
-            &["agent_id", "task_type", "result"],
+            &["agent_id", "cron_id", "result"],
         )
         .expect("hardcoded metric descriptor");
         let cron_delivery_total = IntCounterVec::new(
             Opts::new("spacebot_cron_delivery_total", "Cron delivery outcomes"),
-            &["agent_id", "task_type", "result"],
+            &["agent_id", "cron_id", "result"],
         )
         .expect("hardcoded metric descriptor");
 

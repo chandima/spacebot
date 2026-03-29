@@ -150,13 +150,7 @@ impl Scheduler {
         last_executed_at: Option<&str>,
     ) -> Result<()> {
         let job = cron_job_from_config(&config)?;
-
-        {
-            let mut jobs = self.jobs.write().await;
-            jobs.insert(config.id.clone(), job);
-        }
-
-        if config.enabled {
+        let anchor = if config.enabled {
             let anchor = last_executed_at.and_then(|ts| {
                 chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S")
                     .ok()
@@ -174,7 +168,33 @@ impl Scheduler {
                     "failed to parse last_executed_at; falling back to epoch-aligned interval delay"
                 );
             }
-            self.ensure_job_next_run_at(&config.id, anchor).await?;
+            anchor
+        } else {
+            None
+        };
+
+        {
+            let mut jobs = self.jobs.write().await;
+            jobs.insert(config.id.clone(), job);
+        }
+
+        if config.enabled
+            && let Err(error) = self.ensure_job_next_run_at(&config.id, anchor).await
+        {
+            {
+                let mut jobs = self.jobs.write().await;
+                jobs.remove(&config.id);
+            }
+
+            tracing::warn!(
+                cron_id = %config.id,
+                %error,
+                "failed to initialize cron cursor; rolling back in-memory registration"
+            );
+            return Err(error);
+        }
+
+        if config.enabled {
             self.start_timer(&config.id, anchor).await;
         }
 
@@ -354,8 +374,7 @@ impl Scheduler {
                         );
                         if let Some(next_run_at) =
                             compute_following_next_run_at(&job, &context, scheduled_run_at)
-                        {
-                            let _ = advance_job_cursor(
+                            && let Err(error) = advance_job_cursor(
                                 &context,
                                 &jobs,
                                 &job_id,
@@ -363,7 +382,16 @@ impl Scheduler {
                                 scheduled_run_at,
                                 next_run_at,
                             )
-                            .await;
+                            .await
+                        {
+                            tracing::warn!(
+                                cron_id = %job_id,
+                                scheduled_run_at = %format_cron_timestamp(scheduled_run_at),
+                                next_run_at = %format_cron_timestamp(next_run_at),
+                                %error,
+                                "failed to advance skipped cron cursor for active-hours gate"
+                            );
+                            tokio::time::sleep(Duration::from_secs(5)).await;
                         }
                         continue;
                     }
@@ -373,8 +401,7 @@ impl Scheduler {
                     tracing::debug!(cron_id = %job_id, "previous execution still running, skipping tick");
                     if let Some(next_run_at) =
                         compute_following_next_run_at(&job, &context, scheduled_run_at)
-                    {
-                        let _ = advance_job_cursor(
+                        && let Err(error) = advance_job_cursor(
                             &context,
                             &jobs,
                             &job_id,
@@ -382,7 +409,16 @@ impl Scheduler {
                             scheduled_run_at,
                             next_run_at,
                         )
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(
+                            cron_id = %job_id,
+                            scheduled_run_at = %format_cron_timestamp(scheduled_run_at),
+                            next_run_at = %format_cron_timestamp(next_run_at),
+                            %error,
+                            "failed to advance skipped cron cursor while prior execution was still running"
+                        );
+                        tokio::time::sleep(Duration::from_secs(5)).await;
                     }
                     continue;
                 }
@@ -1192,8 +1228,7 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
                 execution_error: Some(error_message.clone()),
                 delivery_error: None,
             },
-        )
-        .await;
+        );
         return Err(anyhow::anyhow!(error_message).into());
     }
 
@@ -1238,8 +1273,7 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
                         execution_error: Some(error_message.clone()),
                         delivery_error: None,
                     },
-                )
-                .await;
+                );
                 return Err(anyhow::anyhow!(error_message).into());
             }
             Err(join_error) => {
@@ -1255,8 +1289,7 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
                         execution_error: Some(error_message.clone()),
                         delivery_error: None,
                     },
-                )
-                .await;
+                );
                 return Err(anyhow::anyhow!(error_message).into());
             }
         },
@@ -1278,8 +1311,7 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
                     execution_error: Some(error_message.clone()),
                     delivery_error: None,
                 },
-            )
-            .await;
+            );
 
             return Err(anyhow::anyhow!(error_message).into());
         }
@@ -1314,8 +1346,7 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
                     execution_error: None,
                     delivery_error: Some(error.to_string()),
                 },
-            )
-            .await;
+            );
             return Err(error);
         }
 
@@ -1335,8 +1366,7 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
                 execution_error: None,
                 delivery_error: None,
             },
-        )
-        .await;
+        );
     } else {
         tracing::debug!(cron_id = %job.id, "cron job produced no output, skipping delivery");
         persist_cron_execution(
@@ -1350,20 +1380,23 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
                 execution_error: None,
                 delivery_error: None,
             },
-        )
-        .await;
+        );
     }
 
     Ok(())
 }
 
-async fn persist_cron_execution(context: &CronContext, cron_id: &str, record: CronExecutionRecord) {
+fn persist_cron_execution(context: &CronContext, cron_id: &str, record: CronExecutionRecord) {
     #[cfg(feature = "metrics")]
     record_cron_metrics(&context.deps.agent_id, cron_id, &record);
 
-    if let Err(error) = context.store.log_execution(cron_id, &record).await {
-        tracing::warn!(%error, "failed to log cron execution");
-    }
+    let store = context.store.clone();
+    let cron_id = cron_id.to_string();
+    tokio::spawn(async move {
+        if let Err(error) = store.log_execution(&cron_id, &record).await {
+            tracing::warn!(cron_id = %cron_id, %error, "failed to log cron execution");
+        }
+    });
 }
 
 #[cfg(feature = "metrics")]

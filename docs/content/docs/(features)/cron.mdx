@@ -22,7 +22,8 @@ Cron job "check-email" fires (every 30m, active 09:00-17:00)
     → Channel runs the LLM loop (can branch, spawn workers, use tools)
     → Channel produces the first user-visible OutboundResponse
     → Scheduler treats that response as the terminal delivery payload
-    → Scheduler records execution status, then delivers via MessagingManager::broadcast_proactive(...)
+    → Scheduler delivers the OutboundResponse via MessagingManager::broadcast_proactive(...)
+    → Scheduler records execution status and delivery outcome in the log
     → Channel shuts down
 
 Cron job "daily-summary" fires (every 24h)
@@ -67,7 +68,7 @@ CREATE TABLE cron_jobs (
 | `active_start_hour` | Optional start of active window (0-23, 24h local time) |
 | `active_end_hour` | Optional end of active window (0-23, 24h local time) |
 | `enabled` | Flipped to 0 by the circuit breaker after consecutive failures |
-| `run_once` | If 1, the job auto-disables after its first execution attempt |
+| `run_once` | If 1, the job is claimed by disabling it before execution starts so the fire is at-most-once |
 | `next_run_at` | Persisted scheduler cursor used for deterministic restart/claim behavior |
 | `timeout_secs` | Optional per-job wall-clock timeout for the cron run |
 
@@ -111,7 +112,7 @@ Cron jobs enter the system three ways.
 
 ### 1. Config File
 
-Defined in `config.toml` under an agent. Seeded into the database on startup. Existing IDs are upserted, so config remains the source of truth for prompt, schedule, target, enabled/run-once, and timeout settings while preserving compatible persisted cursor state.
+Defined in `config.toml` under an agent. Jobs are seeded into the database on startup and existing IDs are upserted, so `config.toml` remains the source of truth for prompt, schedule, target, `enabled`, `run_once`, and timeout settings while preserving compatible persisted cursor state. In practice that means the `enabled` value from `config.toml` overrides any previously persisted disabled state on startup.
 
 ```toml
 [[agents]]
@@ -162,7 +163,7 @@ The tool persists to the database and registers with the running scheduler immed
 
 The tool also supports `list` (show all active cron jobs) and `delete` (remove by ID).
 
-For one-time reminders, set `run_once: true` on create. The scheduler disables the job after the first execution attempt.
+For one-time reminders, set `run_once: true` on create. The scheduler claims the fire by disabling the job before execution starts and clearing its persisted cursor, which gives at-most-once ownership across processes.
 
 ### 3. Programmatic
 
@@ -198,7 +199,7 @@ If a cron job fails 3 consecutive times, it's automatically disabled:
 
 A "failure" for breaker purposes is still any terminal error from `run_cron_job()` — prompt dispatch failures, channel failures, timeouts, or delivery failures after retries. A successful execution, including a run that produces no delivery response, resets the failure counter to 0.
 
-Disabled cron jobs are not loaded on restart (the store query filters `WHERE enabled = 1`). To re-enable a disabled cron job, update the database row directly or re-seed it from config with `enabled = true`.
+Disabled cron jobs are filtered out by the store query on restart (`WHERE enabled = 1`), but config-defined jobs are seeded first. If `config.toml` sets a job's `enabled = true`, that upsert restores the persisted row before the scheduler reloads enabled jobs. For database-only jobs, re-enable by updating the row directly.
 
 ## Execution Flow
 
@@ -216,7 +217,7 @@ When the scheduler fires a cron job:
 
 6. **Claim and cursor advance** — Recurring jobs advance `next_run_at` before execution starts. Run-once jobs disable themselves before execution starts. This gives deterministic ownership and prevents replay bursts after restart.
 
-7. **Deliver** — If there is a delivery response, it is sent to the target via `MessagingManager::broadcast_proactive()`. Transient send failures retry with bounded backoff; permanent failures fail immediately. Unsupported proactive variants are treated as delivery failures, not silent skips.
+7. **Deliver** — If there is a delivery response, the Scheduler sends the `OutboundResponse` to the target via `MessagingManager::broadcast_proactive()`. Transient send failures retry with bounded backoff; permanent failures fail immediately. Unsupported proactive variants are treated as delivery failures, not silent skips.
 
 8. **Log** — The execution is recorded in `cron_executions` with split execution and delivery outcomes plus any execution/delivery error text.
 

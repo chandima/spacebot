@@ -115,10 +115,12 @@ pub fn broadcast_variant_name(response: &OutboundResponse) -> &'static str {
 }
 
 pub fn broadcast_failure_kind(error: &crate::Error) -> BroadcastFailureKind {
-    if let crate::error::Error::Other(error) = error
-        && let Some(error) = error.downcast_ref::<BroadcastFailureError>()
-    {
-        return error.kind;
+    if let crate::error::Error::Other(error) = error {
+        for cause in error.chain() {
+            if let Some(error) = cause.downcast_ref::<BroadcastFailureError>() {
+                return error.kind;
+            }
+        }
     }
 
     let kind = if is_heuristically_transient_broadcast_error(error) {
@@ -454,6 +456,22 @@ mod tests {
         assert_eq!(
             broadcast_variant_name(&OutboundResponse::StreamChunk("hi".to_string())),
             "StreamChunk"
+        );
+    }
+
+    #[test]
+    fn wrapped_typed_broadcast_failures_preserve_explicit_kind() {
+        let error = match mark_broadcast_failure(
+            BroadcastFailureKind::Permanent,
+            anyhow::anyhow!("invalid destination"),
+        ) {
+            crate::error::Error::Other(error) => crate::error::Error::Other(error.context("wrap")),
+            other => other,
+        };
+
+        assert_eq!(
+            broadcast_failure_kind(&error),
+            BroadcastFailureKind::Permanent
         );
     }
 }

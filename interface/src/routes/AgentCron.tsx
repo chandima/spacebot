@@ -755,20 +755,22 @@ function JobExecutions({ agentId, jobId }: { agentId: string; jobId: string }) {
 	return (
 		<div className="flex flex-col gap-1">
 			{data.executions.map((execution) => {
-				const statusTone = !execution.execution_succeeded
-					? "bg-red-500"
-					: execution.delivery_attempted && execution.delivery_succeeded === false
-						? "bg-yellow-500"
-						: execution.delivery_attempted
-							? "bg-green-500"
-							: "bg-gray-500";
-				const detail =
-					execution.delivery_error ?? execution.execution_error ?? execution.result_summary;
-				const deliveryLabel = !execution.delivery_attempted
-					? "no delivery"
-					: execution.delivery_succeeded
-						? "delivered"
-						: "delivery failed";
+					const statusTone = !execution.execution_succeeded
+						? "bg-red-500"
+						: execution.delivery_attempted && execution.delivery_succeeded === false
+							? "bg-yellow-500"
+							: execution.delivery_attempted && execution.delivery_succeeded === true
+								? "bg-green-500"
+								: "bg-gray-500";
+					const detail =
+						execution.delivery_error ?? execution.execution_error ?? execution.result_summary;
+					const deliveryLabel = !execution.delivery_attempted
+						? "no delivery"
+						: execution.delivery_succeeded === true
+							? "delivered"
+							: execution.delivery_succeeded === false
+								? "delivery failed"
+								: "delivery unknown";
 
 				return (
 					<div
@@ -792,9 +794,11 @@ function JobExecutions({ agentId, jobId }: { agentId: string; jobId: string }) {
 							className={`rounded px-1.5 py-0.5 text-tiny ${
 								!execution.delivery_attempted
 									? "bg-app-lightBox text-ink-faint"
-									: execution.delivery_succeeded
+									: execution.delivery_succeeded === true
 										? "bg-green-500/10 text-green-400"
-										: "bg-yellow-500/10 text-yellow-300"
+										: execution.delivery_succeeded === false
+											? "bg-yellow-500/10 text-yellow-300"
+											: "bg-app-lightBox text-ink-faint"
 							}`}
 						>
 							{deliveryLabel}

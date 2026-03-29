@@ -3,6 +3,7 @@
 use crate::cron::scheduler::CronConfig;
 use crate::error::Result;
 use anyhow::Context as _;
+use chrono::{DateTime, SecondsFormat, Utc};
 use sqlx::{Row as _, SqlitePool, sqlite::SqliteRow};
 use std::collections::HashMap;
 
@@ -23,13 +24,38 @@ pub struct CronExecutionRecord {
     pub delivery_error: Option<String>,
 }
 
-fn row_to_cron_config(row: SqliteRow) -> CronConfig {
-    CronConfig {
-        id: row.try_get("id").unwrap_or_default(),
-        prompt: row.try_get("prompt").unwrap_or_default(),
+fn parse_cron_timestamp(timestamp: &str) -> Option<DateTime<Utc>> {
+    chrono::NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S")
+        .ok()
+        .map(|naive| naive.and_utc())
+        .or_else(|| {
+            chrono::DateTime::parse_from_rfc3339(timestamp)
+                .ok()
+                .map(|dt| dt.to_utc())
+        })
+}
+
+fn normalize_next_run_at_text(next_run_at: Option<&str>) -> Result<Option<String>> {
+    Ok(next_run_at
+        .map(|timestamp| {
+            parse_cron_timestamp(timestamp)
+                .map(|parsed| parsed.to_rfc3339_opts(SecondsFormat::Secs, true))
+                .with_context(|| format!("invalid cron next_run_at timestamp: {timestamp}"))
+        })
+        .transpose()?)
+}
+
+fn row_to_cron_config(row: SqliteRow) -> Result<CronConfig> {
+    Ok(CronConfig {
+        id: row.try_get("id").context("decode cron_jobs.id")?,
+        prompt: row.try_get("prompt").context("decode cron_jobs.prompt")?,
         cron_expr: row.try_get::<Option<String>, _>("cron_expr").ok().flatten(),
-        interval_secs: row.try_get::<i64, _>("interval_secs").unwrap_or(3600) as u64,
-        delivery_target: row.try_get("delivery_target").unwrap_or_default(),
+        interval_secs: row
+            .try_get::<i64, _>("interval_secs")
+            .context("decode cron_jobs.interval_secs")? as u64,
+        delivery_target: row
+            .try_get("delivery_target")
+            .context("decode cron_jobs.delivery_target")?,
         active_hours: {
             let start: Option<i64> = row.try_get("active_start_hour").ok();
             let end: Option<i64> = row.try_get("active_end_hour").ok();
@@ -38,8 +64,14 @@ fn row_to_cron_config(row: SqliteRow) -> CronConfig {
                 _ => None,
             }
         },
-        enabled: row.try_get::<i64, _>("enabled").unwrap_or(1) != 0,
-        run_once: row.try_get::<i64, _>("run_once").unwrap_or(0) != 0,
+        enabled: row
+            .try_get::<i64, _>("enabled")
+            .context("decode cron_jobs.enabled")?
+            != 0,
+        run_once: row
+            .try_get::<i64, _>("run_once")
+            .context("decode cron_jobs.run_once")?
+            != 0,
         next_run_at: row
             .try_get::<Option<String>, _>("next_run_at")
             .ok()
@@ -49,7 +81,7 @@ fn row_to_cron_config(row: SqliteRow) -> CronConfig {
             .ok()
             .flatten()
             .map(|t| t as u64),
-    }
+    })
 }
 
 fn legacy_delivery_attempted(success: bool, result_summary: Option<&str>) -> bool {
@@ -111,6 +143,7 @@ impl CronStore {
     pub async fn save(&self, config: &CronConfig) -> Result<()> {
         let active_start = config.active_hours.map(|h| h.0 as i64);
         let active_end = config.active_hours.map(|h| h.1 as i64);
+        let normalized_next_run_at = normalize_next_run_at_text(config.next_run_at.as_deref())?;
 
         sqlx::query(
             r#"
@@ -143,7 +176,7 @@ impl CronStore {
         .bind(active_end)
         .bind(config.enabled as i64)
         .bind(config.run_once as i64)
-        .bind(config.next_run_at.as_deref())
+        .bind(normalized_next_run_at.as_deref())
         .bind(config.timeout_secs.map(|t| t as i64))
         .execute(&self.pool)
         .await
@@ -166,7 +199,10 @@ impl CronStore {
         .await
         .context("failed to load cron jobs")?;
 
-        let configs = rows.into_iter().map(row_to_cron_config).collect();
+        let configs = rows
+            .into_iter()
+            .map(row_to_cron_config)
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(configs)
     }
@@ -196,7 +232,7 @@ impl CronStore {
         .await
         .context("failed to load cron job")?;
 
-        Ok(row.map(row_to_cron_config))
+        row.map(row_to_cron_config).transpose()
     }
 
     /// Update the enabled state of a cron job (used by circuit breaker).
@@ -313,7 +349,10 @@ impl CronStore {
         .await
         .context("failed to load cron jobs")?;
 
-        let configs = rows.into_iter().map(row_to_cron_config).collect();
+        let configs = rows
+            .into_iter()
+            .map(row_to_cron_config)
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(configs)
     }
@@ -609,5 +648,62 @@ mod tests {
         assert_eq!(stats.delivery_success_count, 1);
         assert_eq!(stats.delivery_failure_count, 0);
         assert_eq!(stats.delivery_skipped_count, 0);
+    }
+
+    #[tokio::test]
+    async fn save_normalizes_next_run_at_to_canonical_rfc3339() {
+        let store = setup_store().await;
+        let next_run_at = "2026-03-29 15:30:00";
+
+        store
+            .save(&CronConfig {
+                id: "normalized-next-run".to_string(),
+                prompt: "digest".to_string(),
+                cron_expr: None,
+                interval_secs: 300,
+                delivery_target: "discord:123456789".to_string(),
+                active_hours: None,
+                enabled: true,
+                run_once: false,
+                next_run_at: Some(next_run_at.to_string()),
+                timeout_secs: None,
+            })
+            .await
+            .expect("save cron job with normalized cursor");
+
+        let loaded = store
+            .load("normalized-next-run")
+            .await
+            .expect("load normalized cron job")
+            .expect("cron job exists");
+
+        assert_eq!(loaded.next_run_at.as_deref(), Some("2026-03-29T15:30:00Z"));
+    }
+
+    #[tokio::test]
+    async fn save_rejects_invalid_next_run_at() {
+        let store = setup_store().await;
+
+        let error = store
+            .save(&CronConfig {
+                id: "invalid-next-run".to_string(),
+                prompt: "digest".to_string(),
+                cron_expr: None,
+                interval_secs: 300,
+                delivery_target: "discord:123456789".to_string(),
+                active_hours: None,
+                enabled: true,
+                run_once: false,
+                next_run_at: Some("not-a-timestamp".to_string()),
+                timeout_secs: None,
+            })
+            .await
+            .expect_err("invalid cursor should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("invalid cron next_run_at timestamp")
+        );
     }
 }

@@ -1,5 +1,13 @@
 use tokio::process::Command;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
+
+fn bubblewrap_true_binary() -> &'static str {
+    if std::path::Path::new("/bin/true").exists() {
+        "/bin/true"
+    } else {
+        "/usr/bin/true"
+    }
+}
 
 /// Available sandbox backends detected at runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,27 +24,64 @@ pub enum SandboxBackend {
 /// Runs preflight checks to ensure the backend actually works.
 pub async fn detect_backend() -> SandboxBackend {
     // Try Linux bubblewrap first
-    if let Ok(true) = check_bubblewrap().await {
-        info!("Sandbox backend: bubblewrap");
-        return SandboxBackend::Bubblewrap;
+    match check_bubblewrap().await {
+        Ok(probe) if probe.exists => {
+            info!(
+                proc_supported = probe.proc_supported,
+                "Sandbox backend: bubblewrap"
+            );
+            return SandboxBackend::Bubblewrap;
+        }
+        Ok(_) => {
+            debug!("bubblewrap not available");
+        }
+        Err(error) => {
+            warn!(error = %error, "bubblewrap probe failed");
+        }
     }
 
     // Try macOS sandbox-exec
-    if let Ok(true) = check_sandbox_exec().await {
-        info!("Sandbox backend: sandbox-exec");
-        return SandboxBackend::SandboxExec;
+    match check_sandbox_exec().await {
+        Ok(true) => {
+            info!("Sandbox backend: sandbox-exec");
+            return SandboxBackend::SandboxExec;
+        }
+        Ok(false) => {
+            debug!("sandbox-exec not available");
+        }
+        Err(error) => {
+            warn!(error = %error, "sandbox-exec probe failed");
+        }
     }
 
     warn!("No sandbox backend available - commands will run unsandboxed");
     SandboxBackend::None
 }
 
-async fn check_bubblewrap() -> Result<bool, Box<dyn std::error::Error>> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BubblewrapProbe {
+    exists: bool,
+    proc_supported: bool,
+}
+
+async fn check_bubblewrap() -> Result<BubblewrapProbe, Box<dyn std::error::Error>> {
     // Check if bwrap exists
-    let version_check = Command::new("bwrap").arg("--version").output().await?;
+    let version_check = match Command::new("bwrap").arg("--version").output().await {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(BubblewrapProbe {
+                exists: false,
+                proc_supported: false,
+            });
+        }
+        Err(error) => return Err(Box::new(error)),
+    };
 
     if !version_check.status.success() {
-        return Ok(false);
+        return Ok(BubblewrapProbe {
+            exists: false,
+            proc_supported: false,
+        });
     }
 
     // Run preflight: try to use --proc flag (may fail in nested containers)
@@ -48,18 +93,24 @@ async fn check_bubblewrap() -> Result<bool, Box<dyn std::error::Error>> {
             "--proc",
             "/proc",
             "--",
-            "/usr/bin/true",
+            bubblewrap_true_binary(),
         ])
         .output()
         .await?;
 
-    Ok(preflight.status.success())
+    Ok(BubblewrapProbe {
+        exists: true,
+        proc_supported: preflight.status.success(),
+    })
 }
 
 async fn check_sandbox_exec() -> Result<bool, Box<dyn std::error::Error>> {
     // Check if sandbox-exec exists at the hardcoded system path
-    let metadata = tokio::fs::metadata("/usr/bin/sandbox-exec").await?;
-    Ok(metadata.is_file())
+    match tokio::fs::metadata("/usr/bin/sandbox-exec").await {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(Box::new(error)),
+    }
 }
 
 #[cfg(test)]

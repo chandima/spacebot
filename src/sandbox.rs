@@ -935,14 +935,29 @@ async fn detect_backend_internal() -> InternalBackend {
     }
 }
 
+fn bubblewrap_true_binary() -> &'static str {
+    if Path::new("/bin/true").exists() {
+        "/bin/true"
+    } else {
+        "/usr/bin/true"
+    }
+}
+
 /// Linux: check if bwrap is available and whether --proc /proc works.
 async fn detect_bubblewrap() -> InternalBackend {
     // Check if bwrap exists
     let version_check = Command::new("bwrap").arg("--version").output().await;
 
-    if version_check.is_err() {
-        tracing::debug!("bwrap not found in PATH");
-        return InternalBackend::None;
+    match version_check {
+        Ok(output) if output.status.success() => {}
+        Ok(_) => {
+            tracing::debug!("bwrap not found in PATH");
+            return InternalBackend::None;
+        }
+        Err(_) => {
+            tracing::debug!("bwrap not found in PATH");
+            return InternalBackend::None;
+        }
     }
 
     // Preflight: test if --proc /proc works (may fail in nested containers)
@@ -954,7 +969,7 @@ async fn detect_bubblewrap() -> InternalBackend {
             "--proc",
             "/proc",
             "--",
-            "/usr/bin/true",
+            bubblewrap_true_binary(),
         ])
         .output()
         .await;
@@ -993,10 +1008,39 @@ mod tests {
 
     #[test]
     fn test_sandbox_mode_serialization() {
-        let enabled = SandboxMode::Enabled;
-        let disabled = SandboxMode::Disabled;
-        // Test that they serialize correctly for TOML
-        assert!(matches!(enabled, SandboxMode::Enabled));
-        assert!(matches!(disabled, SandboxMode::Disabled));
+        #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+        struct ModeWrapper {
+            mode: SandboxMode,
+        }
+
+        let enabled = toml::to_string(&ModeWrapper {
+            mode: SandboxMode::Enabled,
+        })
+        .expect("serialize enabled mode");
+        let disabled = toml::to_string(&ModeWrapper {
+            mode: SandboxMode::Disabled,
+        })
+        .expect("serialize disabled mode");
+
+        assert_eq!(enabled.trim(), "mode = \"enabled\"");
+        assert_eq!(disabled.trim(), "mode = \"disabled\"");
+
+        let enabled_roundtrip: ModeWrapper =
+            toml::from_str(&enabled).expect("deserialize enabled mode");
+        let disabled_roundtrip: ModeWrapper =
+            toml::from_str(&disabled).expect("deserialize disabled mode");
+
+        assert_eq!(
+            enabled_roundtrip,
+            ModeWrapper {
+                mode: SandboxMode::Enabled
+            }
+        );
+        assert_eq!(
+            disabled_roundtrip,
+            ModeWrapper {
+                mode: SandboxMode::Disabled
+            }
+        );
     }
 }
