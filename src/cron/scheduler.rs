@@ -91,10 +91,32 @@ const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 struct ExecutionGuard(Arc<std::sync::atomic::AtomicBool>);
 
 impl Drop for ExecutionGuard {
+    /// SAFETY: This is the only place that writes to this AtomicBool, and all reads
+    /// use `Acquire` ordering (see line 406). The `Release` store here establishes
+    /// a happens-before relationship with those acquire loads, ensuring the flag
+    /// is properly cleared when observed by other threads.
     fn drop(&mut self) {
         self.0.store(false, std::sync::atomic::Ordering::Release);
     }
 }
+
+/// Emit a cron execution error to both working memory and tracing.
+/// Centralizes error reporting to ensure consistent handling across all error paths.
+fn emit_cron_error(context: &CronContext, job_id: &str, error: &crate::error::Error) {
+    let message = format!("Cron failed: {job_id}: {error}");
+
+    // Emit to working memory for agent context awareness
+    context
+        .deps
+        .working_memory
+        .emit(crate::memory::WorkingMemoryEventType::Error, message)
+        .importance(0.8)
+        .record();
+
+    // Log to tracing for observability
+    tracing::error!(cron_id = %job_id, %error, "cron job execution failed");
+}
+
 const SYSTEM_TIMEZONE_LABEL: &str = "system";
 
 /// Scheduler that manages cron job timers and execution.
@@ -484,21 +506,7 @@ impl Scheduler {
                             }
                         }
                         Err(error) => {
-                            exec_context
-                                .deps
-                                .working_memory
-                                .emit(
-                                    crate::memory::WorkingMemoryEventType::Error,
-                                    format!("Cron failed: {exec_job_id}: {error}"),
-                                )
-                                .importance(0.8)
-                                .record();
-
-                            tracing::error!(
-                                cron_id = %exec_job_id,
-                                %error,
-                                "cron job execution failed"
-                            );
+                            emit_cron_error(&exec_context, &exec_job_id, &error);
 
                             let should_disable = {
                                 let mut j = exec_jobs.write().await;
