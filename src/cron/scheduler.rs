@@ -709,27 +709,36 @@ impl Scheduler {
         }
 
         // Job is in the HashMap — normal path.
+        // Use read lock to check current state first
         let was_enabled = {
-            let mut jobs = self.jobs.write().await;
-            if let Some(job) = jobs.get_mut(job_id) {
-                let old = job.enabled;
-                job.enabled = enabled;
-                old
-            } else {
-                // Should not happen (we checked above), but be defensive.
-                return Err(crate::error::Error::Other(anyhow::anyhow!(
-                    "cron job not found"
-                )));
-            }
+            let jobs = self.jobs.read().await;
+            jobs.get(job_id).map(|j| j.enabled).unwrap_or(false)
         };
 
         if enabled && !was_enabled {
+            // Initialize and start timer BEFORE enabling atomically
             self.ensure_job_next_run_at(job_id, None).await?;
             self.start_timer(job_id, None).await;
+
+            // Atomically enable the job after timer started successfully
+            {
+                let mut jobs = self.jobs.write().await;
+                if let Some(j) = jobs.get_mut(job_id) {
+                    j.enabled = true;
+                }
+            }
             tracing::info!(cron_id = %job_id, "cron job enabled and timer started");
         }
 
         if !enabled && was_enabled {
+            // Atomically disable first, then abort timer
+            {
+                let mut jobs = self.jobs.write().await;
+                if let Some(j) = jobs.get_mut(job_id) {
+                    j.enabled = false;
+                }
+            }
+
             // Abort the timer immediately rather than waiting up to one full interval.
             let handle = {
                 let mut timers = self.timers.write().await;
@@ -1409,7 +1418,9 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
                     delivery_error: Some(error.to_string()),
                 },
             );
-            return Err(error);
+            // Return Ok because execution succeeded; delivery failure is recorded
+            // separately and should not increment consecutive_failures
+            return Ok(());
         }
 
         tracing::info!(
