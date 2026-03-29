@@ -8,8 +8,8 @@ use sqlx::sqlite::SqlitePoolOptions;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use spacebot::cron::store::CronStore;
 use spacebot::cron::scheduler::CronConfig;
+use spacebot::cron::store::CronStore;
 
 /// Helper to create an in-memory cron store with migrations.
 async fn setup_cron_store() -> Arc<CronStore> {
@@ -106,7 +106,11 @@ async fn claim_and_advance_is_atomic_only_one_succeeds() {
         .await
         .expect("load should succeed")
         .expect("job should exist");
-    assert_eq!(config.next_run_at, Some(next_text), "cursor should be advanced");
+    assert_eq!(
+        config.next_run_at,
+        Some(next_text),
+        "cursor should be advanced"
+    );
 }
 
 /// Test that a second claim for the same scheduled time fails after successful advance.
@@ -164,9 +168,7 @@ async fn duplicate_claim_fails_after_successful_advance() {
 #[tokio::test]
 async fn run_once_claim_prevents_subsequent_execution() {
     let store = setup_cron_store().await;
-    let scheduled = chrono::Utc::now()
-        .with_nanosecond(0)
-        .unwrap();
+    let scheduled = chrono::Utc::now().with_nanosecond(0).unwrap();
     let next_scheduled = scheduled + chrono::Duration::minutes(5);
     let scheduled_text = scheduled.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let next_text = next_scheduled.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
@@ -206,7 +208,10 @@ async fn run_once_claim_prevents_subsequent_execution() {
 
     // This claim succeeds because cursor was advanced, but in real scheduler
     // the job would be disabled by the execution logic
-    assert!(second_claim, "claim for new cursor succeeds (job should be disabled by execution)");
+    assert!(
+        second_claim,
+        "claim for new cursor succeeds (job should be disabled by execution)"
+    );
 }
 
 /// Test that stale cursor detection works after claim race loser refreshes.
@@ -271,5 +276,8 @@ async fn stale_cursor_detection_after_lost_claim() {
         .claim_and_advance("stale-test", &advanced_text, &next_next_text)
         .await
         .expect("second claim should not error");
-    assert!(worker_b_second_claim, "worker B should claim the new cursor");
+    assert!(
+        worker_b_second_claim,
+        "worker B should claim the new cursor"
+    );
 }
