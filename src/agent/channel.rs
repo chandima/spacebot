@@ -2831,7 +2831,8 @@ impl Channel {
 
                     // Truncate for working memory — full conclusion lives in branch_runs.
                     let summary = if conclusion.len() > 200 {
-                        format!("{}...", &conclusion[..200])
+                        let end = conclusion.floor_char_boundary(200);
+                        format!("{}...", &conclusion[..end])
                     } else {
                         conclusion.clone()
                     };
@@ -2904,7 +2905,8 @@ impl Channel {
 
                 // Record worker completion in working memory.
                 let worker_summary = if result.len() > 200 {
-                    format!("{}...", &result[..200])
+                    let end = result.floor_char_boundary(200);
+                    format!("{}...", &result[..end])
                 } else {
                     result.clone()
                 };
