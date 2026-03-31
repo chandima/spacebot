@@ -297,6 +297,7 @@ fn parse_mcp_server_config(raw: TomlMcpServerConfig) -> Result<McpServerConfig> 
         name: raw.name,
         transport,
         enabled: raw.enabled,
+        init_timeout_secs: raw.init_timeout_secs.unwrap_or(30),
     })
 }
 

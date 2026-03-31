@@ -434,6 +434,7 @@ pub(super) struct TomlMcpServerConfig {
     pub(super) url: Option<String>,
     #[serde(default)]
     pub(super) headers: HashMap<String, String>,
+    pub(super) init_timeout_secs: Option<u64>,
 }
 
 pub(super) fn default_mcp_enabled() -> bool {

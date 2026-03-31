@@ -605,6 +605,9 @@ pub struct McpServerConfig {
     pub name: String,
     pub transport: McpTransport,
     pub enabled: bool,
+    /// Timeout in seconds for MCP server initialization (default: 30).
+    /// Increase for servers with slow startup (e.g., large cache loads).
+    pub init_timeout_secs: u64,
 }
 
 /// MCP transport configuration.

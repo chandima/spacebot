@@ -148,7 +148,16 @@ impl McpConnection {
         #[cfg(feature = "metrics")]
         set_mcp_connection_state(&self.name, 0, 1, 0, 0, 0);
 
-        let session_result = self.connect_session().await;
+        let init_timeout = std::time::Duration::from_secs(self.config.init_timeout_secs);
+        let session_result = match tokio::time::timeout(init_timeout, self.connect_session()).await
+        {
+            Ok(result) => result,
+            Err(_) => Err(anyhow!(
+                "mcp server '{}' initialization timed out after {}s",
+                self.name,
+                self.config.init_timeout_secs,
+            )),
+        };
         let mut client_guard = self.client.lock().await;
 
         match session_result {
@@ -414,8 +423,12 @@ impl McpConnection {
                 // Keep PATH so stdio servers launched via shims/shebangs
                 // (for example `npx` -> `/usr/bin/env node`) can still
                 // resolve their runtime without inheriting unrelated secrets.
+                // Keep HOME so servers can find cache/config directories.
                 if let Ok(path) = std::env::var("PATH") {
                     child_command.env("PATH", path);
+                }
+                if let Ok(home) = std::env::var("HOME") {
+                    child_command.env("HOME", home);
                 }
                 child_command.args(&resolved_args);
                 child_command.envs(&resolved_env);
