@@ -666,12 +666,16 @@ pub fn is_valid_instance_name(name: &str) -> bool {
     if name.chars().all(|c| c.is_ascii_digit()) {
         return false;
     }
-    // Must not look like a Slack workspace ID (Txxxxx, Cxxxxx, etc.)
-    if name.len() > 6
-        && name.starts_with(|c: char| c.is_ascii_uppercase())
-        && name[1..].chars().all(|c| c.is_ascii_digit())
-    {
-        return false;
+    // Must not look like a Slack/platform ID.
+    // Classic format: uppercase letter + all digits (T012345, C012345), len > 6
+    // Enterprise format: uppercase letter + uppercase letters/digits (T0APRHSB676, D0APL3DF66S), len >= 9
+    if name.starts_with(|c: char| c.is_ascii_uppercase()) {
+        let tail = &name[1..];
+        if (name.len() > 6 && tail.chars().all(|c| c.is_ascii_digit()))
+            || (name.len() >= 9 && tail.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
+        {
+            return false;
+        }
     }
     // Must be reasonably short (instance names are short, not long IDs)
     if name.len() > 20 {
@@ -1029,6 +1033,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_named_instance_target_slack_enterprise() {
+        // Enterprise Slack: workspace ID has mixed alphanumeric (T0APRHSB676)
+        let parsed =
+            super::parse_named_instance_target(&["slack", "T0APRHSB676", "D0APL3DF66S"]);
+        assert_eq!(
+            parsed,
+            Some(super::BroadcastTarget {
+                adapter: "slack".to_string(),
+                target: "D0APL3DF66S".to_string(),
+            })
+        );
+    }
+
+    #[test]
     fn parse_named_instance_target_default_adapter() {
         // Default adapter (2 parts): telegram:target
         let parsed = super::parse_named_instance_target(&["telegram", "12345"]);
@@ -1072,9 +1090,18 @@ mod tests {
 
     #[test]
     fn is_valid_instance_name_invalid_slack_workspace() {
-        // Slack workspace ID pattern
+        // Classic Slack workspace ID pattern (uppercase + all digits)
         assert!(!super::is_valid_instance_name("T012345"));
         assert!(!super::is_valid_instance_name("C012345"));
+    }
+
+    #[test]
+    fn is_valid_instance_name_invalid_enterprise_slack_ids() {
+        // Enterprise Slack IDs: uppercase letter + mixed uppercase/digits
+        assert!(!super::is_valid_instance_name("T0APRHSB676"));
+        assert!(!super::is_valid_instance_name("D0APL3DF66S"));
+        assert!(!super::is_valid_instance_name("C0APL3DF66S"));
+        assert!(!super::is_valid_instance_name("E0XYZAB123"));
     }
 
     #[test]
