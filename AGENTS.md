@@ -43,6 +43,43 @@ Additional rules:
 - For changes in async/stateful paths (worker lifecycle, cancellation, retrigger, recall cache behavior), include explicit race/terminal-state reasoning in the PR summary and run targeted tests in addition to `just gate-pr`.
 - Do not push if any gate is red.
 
+## Release Build & Deploy
+
+This is an M1 Mac with 8GB RAM. Builds are resource-constrained. Follow these steps:
+
+**Prerequisites:**
+- `sccache` must be installed (`brew install sccache`)
+- `RUSTC_WRAPPER` must be set: `export RUSTC_WRAPPER="$(which sccache)"` (in `~/.zshrc`)
+- LTO is disabled in `Cargo.toml` (`lto = false`) to reduce build time and RAM usage
+
+**Build command:**
+```bash
+export RUSTC_WRAPPER="$(which sccache)"
+cargo build --release
+```
+
+**Important:** Always ensure `RUSTC_WRAPPER` is set in the current shell before building. It is configured in `~/.zshrc` but may not be inherited by all sessions — set it explicitly if `sccache --show-stats` shows zero compile requests after a build.
+
+**Deploy (local):**
+```bash
+cp target/release/spacebot ~/.local/bin/spacebot
+codesign -s - -f ~/.local/bin/spacebot   # Required — sccache builds invalidate code signature
+launchctl unload ~/Library/LaunchAgents/com.spacebot.agent.plist
+# Kill any lingering process: ps aux | grep spacebot, then kill -9 <PID>
+# Remove stale PID/socket if needed: rm -f ~/.spacebot/spacebot.pid ~/.spacebot/spacebot.sock
+launchctl load ~/Library/LaunchAgents/com.spacebot.agent.plist
+```
+
+**Build times (baseline):**
+- Cold build (no sccache cache): ~25 min
+- Incremental (single file change, warm cache): should be significantly faster
+- The binary is at `~/.local/bin/spacebot` (not `/usr/local/bin` — no sudo needed)
+
+**Verify sccache is working:**
+```bash
+sccache --show-stats  # Should show non-zero compile requests and cache hits after a build
+```
+
 ## Nix Flake Workflow
 
 ### Frontend Dependencies
