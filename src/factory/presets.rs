@@ -114,8 +114,8 @@ mod tests {
         let presets = PresetRegistry::list();
         assert_eq!(
             presets.len(),
-            9,
-            "expected 9 presets, got {}",
+            12,
+            "expected 12 presets, got {}",
             presets.len()
         );
 
@@ -129,6 +129,9 @@ mod tests {
         assert!(ids.contains(&"sales-bdr"));
         assert!(ids.contains(&"executive-assistant"));
         assert!(ids.contains(&"project-manager"));
+        assert!(ids.contains(&"architect-agent"));
+        assert!(ids.contains(&"coder-agent"));
+        assert!(ids.contains(&"reviewer-agent"));
     }
 
     #[test]

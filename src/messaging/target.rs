@@ -672,7 +672,10 @@ pub fn is_valid_instance_name(name: &str) -> bool {
     if name.starts_with(|c: char| c.is_ascii_uppercase()) {
         let tail = &name[1..];
         if (name.len() > 6 && tail.chars().all(|c| c.is_ascii_digit()))
-            || (name.len() >= 9 && tail.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
+            || (name.len() >= 9
+                && tail
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
         {
             return false;
         }
@@ -1035,8 +1038,7 @@ mod tests {
     #[test]
     fn parse_named_instance_target_slack_enterprise() {
         // Enterprise Slack: workspace ID has mixed alphanumeric (T0APRHSB676)
-        let parsed =
-            super::parse_named_instance_target(&["slack", "T0APRHSB676", "D0APL3DF66S"]);
+        let parsed = super::parse_named_instance_target(&["slack", "T0APRHSB676", "D0APL3DF66S"]);
         assert_eq!(
             parsed,
             Some(super::BroadcastTarget {

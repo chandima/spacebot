@@ -1,0 +1,9 @@
+id = "coder-agent"
+name = "Coder"
+description = "Test-driven implementation specialist. Writes failing tests first, implements to pass, refactors. Uses OpenCode workers."
+icon = "terminal"
+tags = ["coding", "tdd", "implementation", "testing", "opencode"]
+
+[defaults]
+max_concurrent_workers = 3
+max_turns = 15

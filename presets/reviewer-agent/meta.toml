@@ -1,0 +1,9 @@
+id = "reviewer-agent"
+name = "Reviewer"
+description = "Three-phase adversarial code reviewer and QA specialist. Spec compliance, adversarial attack surface analysis, and behavior verification."
+icon = "shield"
+tags = ["review", "adversarial", "qa", "security", "quality"]
+
+[defaults]
+max_concurrent_workers = 3
+max_turns = 8

@@ -1,0 +1,9 @@
+id = "architect-agent"
+name = "Architect"
+description = "Problem framing, scope review, architecture lock, and design document production for coding pipelines."
+icon = "blueprint"
+tags = ["architecture", "design", "planning", "scope", "systems"]
+
+[defaults]
+max_concurrent_workers = 3
+max_turns = 15
