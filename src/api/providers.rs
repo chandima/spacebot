@@ -970,7 +970,8 @@ async fn update_azure_provider(
     }
 
     let normalized_deployment = request.deployment.as_ref().map(|s| s.trim()).unwrap_or("");
-    if !model_matches_provider("azure", normalized_deployment) {
+    let azure_model = format!("azure/{}", normalized_deployment);
+    if !model_matches_provider("azure", &azure_model) {
         return Ok(Json(ProviderUpdateResponse {
             success: false,
             message: format!(
