@@ -397,7 +397,7 @@ export function Settings() {
 	const oauthAbortRef = useRef<AbortController | null>(null);
 
 	const handleTestModel = async (): Promise<boolean> => {
-		if (!editingProvider || !keyInput.trim() || !modelInput.trim()) return false;
+		if (!editingProvider || !modelInput.trim()) return false;
 
 		if (editingProvider === "azure") {
 			if (!azureBaseUrl.trim()) {
@@ -415,6 +415,10 @@ export function Settings() {
 			const normalizedBaseUrl = azureBaseUrl.trim().replace(/\/+$/, '');
 			if (!normalizedBaseUrl.includes(".openai.azure.com")) {
 				setTestResult({ success: false, message: "Base URL must contain '.openai.azure.com' (e.g., https://{resource-name}.openai.azure.com)" });
+				return false;
+			}
+			if (!keyInput.trim()) {
+				setTestResult({ success: false, message: "API key is required for Azure" });
 				return false;
 			}
 		}
@@ -447,7 +451,7 @@ export function Settings() {
 	};
 
 	const handleSave = async () => {
-		if (!keyInput.trim() || !editingProvider || !modelInput.trim()) return;
+		if (!editingProvider || !modelInput.trim()) return;
 
 		if (editingProvider === "azure") {
 			if (!azureBaseUrl.trim()) {
@@ -465,6 +469,10 @@ export function Settings() {
 			const normalizedBaseUrl = azureBaseUrl.trim().replace(/\/+$/, '');
 			if (!normalizedBaseUrl.includes(".openai.azure.com")) {
 				setMessage({ text: "Base URL must contain '.openai.azure.com'", type: "error" });
+				return;
+			}
+			if (!keyInput.trim()) {
+				setMessage({ text: "API key is required for Azure", type: "error" });
 				return;
 			}
 		}
@@ -973,7 +981,7 @@ export function Settings() {
 					<div className="flex items-center gap-2 mt-3">
 						<Button
 							onClick={handleTestModel}
-							disabled={!editingProvider || !keyInput.trim() || !modelInput.trim() || (editingProvider === "azure" && (!azureBaseUrl.trim() || !azureApiVersion.trim() || !azureDeployment.trim()))}
+							disabled={!editingProvider || !modelInput.trim() || (editingProvider === "azure" && (!azureBaseUrl.trim() || !azureApiVersion.trim() || !azureDeployment.trim()))}
 							loading={testModelMutation.isPending}
 							variant="outline"
 							size="sm"
@@ -1021,14 +1029,14 @@ export function Settings() {
 								<Button onClick={handleClose} variant="ghost" size="sm">
 									Cancel
 								</Button>
-								<Button
-									onClick={handleSave}
-									disabled={!keyInput.trim() || !azureBaseUrl.trim() || !azureApiVersion.trim() || !azureDeployment.trim()}
-									loading={updateMutation.isPending}
-									size="sm"
-								>
-									Save
-								</Button>
+							<Button
+								onClick={handleSave}
+								disabled={!azureBaseUrl.trim() || !azureApiVersion.trim() || !azureDeployment.trim()}
+								loading={updateMutation.isPending}
+								size="sm"
+							>
+								Save
+							</Button>
 							</>
 						) : (
 							<>
@@ -1037,7 +1045,7 @@ export function Settings() {
 								</Button>
 								<Button
 									onClick={handleSave}
-									disabled={!keyInput.trim() || !modelInput.trim()}
+									disabled={!modelInput.trim()}
 									loading={updateMutation.isPending}
 									size="sm"
 								>
