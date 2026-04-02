@@ -198,15 +198,22 @@ impl ActiveChannelKey {
     }
 }
 
+/// Maximum number of deferred messages per channel before oldest are dropped.
+const DEFERRED_INJECTION_CAP: usize = 64;
+
 fn queue_deferred_injection(
     deferred_injections: &mut HashMap<ActiveChannelKey, Vec<spacebot::InboundMessage>>,
     injection: spacebot::ChannelInjection,
 ) {
     let key = ActiveChannelKey::new(injection.agent_id, injection.conversation_id);
-    deferred_injections
-        .entry(key)
-        .or_default()
-        .push(injection.message);
+    let queue = deferred_injections.entry(key).or_default();
+    if queue.len() >= DEFERRED_INJECTION_CAP {
+        tracing::warn!(
+            "deferred injection queue at capacity ({DEFERRED_INJECTION_CAP}), dropping oldest message"
+        );
+        queue.remove(0);
+    }
+    queue.push(injection.message);
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1904,6 +1911,7 @@ async fn run(
                 // (unlikely at startup), use its state. Otherwise, pre-create it.
                 let channel_key =
                     ActiveChannelKey::new(agent_id.to_string(), conversation_id.clone());
+                #[allow(clippy::map_entry)] // 250-line block is clearer with contains_key+insert
                 if !active_channels.contains_key(&channel_key) {
                     // First pass: retire any workers whose sessions can't be
                     // reconnected. Only create the channel if at least one
@@ -2403,15 +2411,16 @@ async fn run(
                         let mut pending_injections = pending_injections.into_iter();
 
                         while let Some(injection_message) = pending_injections.next() {
-                            if let Err(error) = message_tx.send(injection_message.clone()).await {
+                            if let Err(error) = message_tx.send(injection_message).await {
                                 tracing::warn!(
                                     conversation_id = %conversation_id,
                                     agent_id = %agent_id,
-                                    %error,
                                     "failed to deliver deferred injected message to channel"
                                 );
-                                remaining_injections.push(injection_message);
+                                remaining_injections.push(error.0);
                                 remaining_injections.extend(pending_injections);
+                                // Also re-queue the current inbound message so it isn't lost
+                                remaining_injections.push(message.clone());
                                 deferred_injections
                                     .entry(channel_key.clone())
                                     .or_default()
