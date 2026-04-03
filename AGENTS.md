@@ -52,23 +52,23 @@ This is an M1 Mac with 8GB RAM. Builds are resource-constrained. Follow these st
 - `RUSTC_WRAPPER` must be set: `export RUSTC_WRAPPER="$(which sccache)"` (in `~/.zshrc`)
 - LTO is disabled in `Cargo.toml` (`lto = false`) to reduce build time and RAM usage
 
-**Build command:**
+**Deploy command (preferred):**
+```bash
+just deploy
+```
+
+This single command builds a release binary, ad-hoc codesigns it (macOS), copies it to `~/.local/bin/spacebot`, and restarts the launchd service. Always use this instead of manual steps.
+
+**Manual deploy (if `just` is unavailable):**
 ```bash
 export RUSTC_WRAPPER="$(which sccache)"
 cargo build --release
-```
-
-**Important:** Always ensure `RUSTC_WRAPPER` is set in the current shell before building. It is configured in `~/.zshrc` but may not be inherited by all sessions — set it explicitly if `sccache --show-stats` shows zero compile requests after a build.
-
-**Deploy (local):**
-```bash
 cp target/release/spacebot ~/.local/bin/spacebot
 codesign -s - -f ~/.local/bin/spacebot   # Required — sccache builds invalidate code signature
-launchctl unload ~/Library/LaunchAgents/com.spacebot.agent.plist
-# Kill any lingering process: ps aux | grep spacebot, then kill -9 <PID>
-# Remove stale PID/socket if needed: rm -f ~/.spacebot/spacebot.pid ~/.spacebot/spacebot.sock
-launchctl load ~/Library/LaunchAgents/com.spacebot.agent.plist
+~/.local/bin/spacebot restart
 ```
+
+**⚠️ Never skip the `codesign` step on macOS.** Without it, macOS will SIGKILL the binary on launch with `Code Signature Invalid`, causing a crash loop under launchd.
 
 **Build times (baseline):**
 - Cold build (no sccache cache): ~25 min
@@ -79,6 +79,108 @@ launchctl load ~/Library/LaunchAgents/com.spacebot.agent.plist
 ```bash
 sccache --show-stats  # Should show non-zero compile requests and cache hits after a build
 ```
+
+## Daemon Management
+
+Spacebot runs as a daemon managed by macOS launchd. The binary includes built-in subcommands for lifecycle management.
+
+**CLI subcommands:**
+```bash
+~/.local/bin/spacebot start    # Start the daemon (writes PID to ~/.spacebot/spacebot.pid)
+~/.local/bin/spacebot stop     # Stop the daemon gracefully
+~/.local/bin/spacebot restart  # Stop + start (preferred way to restart after deploy)
+~/.local/bin/spacebot status   # Check if the daemon is running
+```
+
+**Key paths:**
+| Path | Purpose |
+|------|---------|
+| `~/.local/bin/spacebot` | Installed binary |
+| `~/.spacebot/config.toml` | Running configuration (agent definitions, tokens, bindings) |
+| `~/.spacebot/spacebot.pid` | PID file for the running daemon |
+| `~/.spacebot/spacebot.sock` | Unix socket for IPC / CLI commands |
+| `~/.spacebot/logs/spacebot.log.YYYY-MM-DD` | Daily-rotated structured logs |
+| `~/.spacebot/agents/{agent-id}/data/spacebot.db` | Per-agent SQLite database |
+| `~/.spacebot/agents/{agent-id}/identity/` | Per-agent SOUL.md, IDENTITY.md, ROLE.md |
+| `~/Library/LaunchAgents/com.spacebot.agent.plist` | launchd service definition |
+
+**API (when running):**
+- Base URL: `http://127.0.0.1:19898/api/`
+- Health: `GET /api/health` → `{"status":"ok"}`
+- Agents: `GET /api/agents` — list all agents with config
+- Messaging: `GET /api/messaging/status` — adapter status per platform
+- MCP: `GET /api/mcp/status` — MCP server status per agent
+- Cron: `GET /api/agents/cron?agent_id=X` — list cron jobs with execution stats
+
+**Troubleshooting a stuck daemon:**
+```bash
+# If `spacebot restart` fails:
+~/.local/bin/spacebot stop
+ps aux | grep spacebot           # Find lingering PIDs
+kill -9 <PID>                    # Force kill
+rm -f ~/.spacebot/spacebot.pid ~/.spacebot/spacebot.sock
+~/.local/bin/spacebot start
+```
+
+**After deploying code changes, always restart the daemon.** The running binary at `~/.local/bin/spacebot` is the OLD build until you copy the new binary and restart.
+
+## Deployed Agent Topology
+
+The deployed instance (`~/.spacebot/config.toml`) defines a multi-agent system with a hub-and-spoke topology. The `default-agent` orchestrator delegates to specialist agents via hierarchical two-way links.
+
+**Communication graph:**
+```
+                    ┌──────────────┐
+                    │ default-agent│ ← Slack Bot adapter (Socket Mode)
+                    │ (Orchestrator)│ ← 10 cron jobs for Slack monitoring
+                    └──────┬───────┘
+            ┌──────┬───────┼───────┬──────────┐
+            ▼      ▼       ▼       ▼          ▼
+      ┌─────────┐┌──────┐┌────────┐┌────────┐┌───────────┐
+      │ slack   ││archi-││ coder  ││reviewer││notebooklm│
+      │ agent   ││tect  ││ agent  ││ agent  ││  agent   │
+      └─────────┘└──────┘└────────┘└────────┘└───────────┘
+      Enterprise  Design  TDD impl  Code      NotebookLM
+      Slack MCP   + scope  (OpenCode) review    research
+```
+
+### Agent Definitions
+
+| Agent ID | Display Name | Purpose | Key Capabilities |
+|----------|-------------|---------|------------------|
+| `default-agent` | Spacebot | Primary user-facing orchestrator. Handles conversations via Slack, delegates all specialist work. | Slack Bot binding, 10 cron jobs for channel monitoring, branch/worker spawning |
+| `slack-agent` | Slack | Enterprise Slack workspace search and monitoring. Read-only access to all channels, messages, users, and files. | Enterprise Slack MCP (`slack-mcp-server` with `xoxc`/`xoxd` browser tokens), `conversations_search_messages`, `users_list`, channel history |
+| `architect-agent` | Architect | Problem framing, scope review, architecture lock, design document production. | High-quality model routing (gpt-5.4 for channel+worker) |
+| `coder-agent` | Coder | TDD implementation specialist. Writes code via OpenCode workers. | Codex model routing (`gpt-5.3-codex`), OpenCode subprocess workers |
+| `reviewer-agent` | Reviewer | Three-phase adversarial code review and QA verification. | Alternative model (`kimi-k2.5`) for diverse perspective |
+| `notebooklm-agent` | NotebookLM | Research, knowledge management, and content generation. | NotebookLM MCP server (`notebooklm-mcp-cli`) |
+
+### Slack Integration Architecture
+
+Spacebot connects to Slack through **two independent mechanisms**:
+
+1. **Slack Bot adapter** (`[messaging.slack]` in config) — Socket Mode bot using `xoxb-` bot token and `xapp-` app token. Bound to `default-agent` via `[[bindings]]`. Handles inbound/outbound messaging (DMs, channel mentions). This is the conversational interface.
+
+2. **Enterprise Slack MCP** (`enterprise-slack` MCP server) — The `slack-mcp-server` binary using `xoxc-`/`xoxd-` browser tokens for read-only enterprise workspace access. Connected **only on `slack-agent`** (explicitly disabled on all other agents). Provides `conversations_search_messages`, `users_list`, `conversations_history`, `files_list`, etc. This is the data ingestion/search interface.
+
+**How Slack monitoring works:** Cron jobs on `default-agent` fire on schedule → branch context thinks about what to search → `send_agent_message` delegates to `slack-agent` → `slack-agent` uses Enterprise Slack MCP tools to search/scan → results flow back to `default-agent` → findings delivered to Slack via the Bot adapter.
+
+### MCP Servers
+
+Defined at the defaults level in config, overridden per-agent:
+
+| MCP Server | Command | Enabled On | Purpose |
+|------------|---------|-----------|---------|
+| `enterprise-slack` | `/usr/local/bin/slack-mcp-server` | `slack-agent` only | Enterprise Slack workspace search (browser tokens) |
+| `searxng` | `mcp-searxng` | All agents | Web search via SearXNG |
+| `microsoft` | `npx @softeria/ms-365-mcp-server` | All agents | Microsoft 365 (calendar, mail, contacts, files) |
+| `notebooklm` | `uvx notebooklm-mcp-cli notebooklm-mcp` | `notebooklm-agent` only | Google NotebookLM |
+
+### Cron Jobs
+
+Cron jobs are stored in SQLite (`cron_jobs` table) per agent and loaded at startup. They drive the periodic Slack monitoring. All 10 cron jobs are on `default-agent` and deliver results to Slack DMs.
+
+The cron system has a **reconciliation loop** that runs every 5 minutes to catch jobs that were saved to the database but not registered with the in-memory scheduler (e.g. due to interrupted tool calls between the `save()` and `register()` await points).
 
 ## Nix Flake Workflow
 
@@ -466,10 +568,12 @@ These are validated patterns from research (see `docs/research/pattern-analysis.
 
 - `README.md` — full architecture design
 - `RUST_STYLE_GUIDE.md` — coding conventions (read this first)
-- `docs/memory.md` — memory system design
-- `docs/research/rig-integration.md` — how Spacebot maps onto Rig
-- `docs/research/repo-structure.md` — module layout rationale
-- `docs/research/pattern-analysis.md` — patterns to adopt/adapt/skip
-- `docs/messaging.md` — messaging system design (Discord, Telegram, webhook)
-- `docs/routing.md` — model routing design (process-type defaults, task-type overrides, fallbacks)
-- `docs/daemon.md` — daemon mode, IPC, CLI subcommands
+- `docs/copilot-setup.md` — Copilot CLI plugins, skills, hooks, and MCP configuration
+- `docs/design-docs/agent-factory.md` — agent creation flow, preset archetypes
+- `docs/design-docs/multi-agent-communication-graph.md` — inter-agent links and topology
+- `docs/design-docs/mcp.md` — MCP client integration (stdio/HTTP, per-agent config)
+- `docs/design-docs/named-messaging-adapters.md` — multi-adapter messaging (Slack, Discord, Telegram)
+- `docs/design-docs/cron-timezone-and-reliability.md` — cron scheduling and timezone handling
+- `docs/design-docs/tool-nudging.md` — worker outcome gate / retry nudging
+- `docs/design-docs/sandbox.md` — sandbox implementation (shell/file isolation)
+- `docs/design-docs/working-memory.md` — working memory system (situational awareness)
