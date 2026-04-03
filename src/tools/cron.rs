@@ -340,9 +340,10 @@ impl CronTool {
                     "'cron_expr' must have exactly 5 fields (got {field_count}): '{expr}'"
                 )));
             }
-            // The `cron` crate uses 7-field expressions (sec min hour dom month dow year).
-            // Users write standard 5-field cron (min hour dom month dow). Expand before parsing.
-            let expanded = format!("0 {expr} *");
+            // The `cron` crate uses 7-field expressions (sec min hour dom month dow year)
+            // with 1-based DOW (1=Sun). Standard cron uses 0-based (0=Sun).
+            // expand_cron_expr handles both the field expansion and DOW translation.
+            let expanded = crate::cron::scheduler::expand_cron_expr(expr);
             cron::Schedule::from_str(&expanded)
                 .map_err(|error| CronError(format!("invalid 'cron_expr' '{expr}': {error}")))?;
         }

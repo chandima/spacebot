@@ -1365,7 +1365,10 @@ impl AgentConfig {
                 .or_else(|| defaults.brave_search_key.clone()),
             cron_timezone: resolved_cron_timezone,
             user_timezone: resolved_user_timezone,
-            sandbox: self.sandbox.clone().unwrap_or_else(|| defaults.sandbox.clone()),
+            sandbox: self
+                .sandbox
+                .clone()
+                .unwrap_or_else(|| defaults.sandbox.clone()),
             projects: self
                 .projects
                 .clone()

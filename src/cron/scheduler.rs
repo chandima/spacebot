@@ -840,14 +840,72 @@ fn interval_initial_delay(interval_secs: u64) -> Duration {
 }
 
 /// Expand a 5-field standard cron expression to the 7-field format required by
-/// the `cron` crate: `sec min hour dom month dow year`. If the expression
-/// already has 6+ fields, return it as-is.
-fn expand_cron_expr(expr: &str) -> String {
-    let field_count = expr.split_whitespace().count();
-    if field_count == 5 {
-        format!("0 {expr} *")
+/// the `cron` crate: `sec min hour dom month dow year`.
+///
+/// Standard Unix cron uses 0-based day-of-week (0=Sun, 1=Mon, ..., 6=Sat, 7=Sun),
+/// but the `cron` crate uses 1-based (1=Sun, 2=Mon, ..., 7=Sat). This function
+/// translates the DOW field so that expressions written in standard convention
+/// (e.g. `1-5` for Mon–Fri) work correctly.
+///
+/// If the expression already has 6+ fields, it is returned as-is (assumed to
+/// already be in the crate's format).
+pub fn expand_cron_expr(expr: &str) -> String {
+    let fields: Vec<&str> = expr.split_whitespace().collect();
+    if fields.len() == 5 {
+        let translated_dow = translate_dow_field(fields[4]);
+        format!(
+            "0 {} {} {} {} {translated_dow} *",
+            fields[0], fields[1], fields[2], fields[3]
+        )
     } else {
         expr.to_string()
+    }
+}
+
+/// Translate a day-of-week field from standard Unix cron convention
+/// (0=Sun, 1=Mon, ..., 6=Sat, 7=Sun) to the `cron` crate's convention
+/// (1=Sun, 2=Mon, ..., 7=Sat).
+///
+/// Handles single values, ranges (`1-5`), lists (`1,3,5`), steps (`*/2`,
+/// `1-5/2`), and wildcards (`*`). Named days (e.g. `MON`) are passed through
+/// unchanged since the crate interprets them correctly.
+fn translate_dow_field(dow: &str) -> String {
+    if dow == "*" || dow == "?" {
+        return dow.to_string();
+    }
+
+    dow.split(',')
+        .map(|part| {
+            let (range_part, step) = match part.split_once('/') {
+                Some((range, step)) => (range, Some(step)),
+                None => (part, None),
+            };
+
+            let translated = if range_part == "*" {
+                "*".to_string()
+            } else if let Some((start, end)) = range_part.split_once('-') {
+                let start_val = translate_dow_value(start);
+                let end_val = translate_dow_value(end);
+                format!("{start_val}-{end_val}")
+            } else {
+                translate_dow_value(range_part)
+            };
+
+            match step {
+                Some(step) => format!("{translated}/{step}"),
+                None => translated,
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Map a single Unix DOW value to the cron-crate value.
+fn translate_dow_value(value: &str) -> String {
+    match value.parse::<u8>() {
+        Ok(0 | 7) => "1".to_string(),
+        Ok(n) if n <= 6 => (n + 1).to_string(),
+        _ => value.to_string(),
     }
 }
 
@@ -1100,7 +1158,7 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{hour_in_active_window, normalize_active_hours};
+    use super::{expand_cron_expr, hour_in_active_window, normalize_active_hours};
 
     #[test]
     fn test_hour_in_active_window_non_wrapping() {
@@ -1132,5 +1190,106 @@ mod tests {
         assert_eq!(normalize_active_hours(Some((12, 12))), None);
         assert_eq!(normalize_active_hours(Some((9, 17))), Some((9, 17)));
         assert_eq!(normalize_active_hours(None), None);
+    }
+
+    #[test]
+    fn test_cron_dow_convention_friday() {
+        use chrono::Datelike;
+        use chrono_tz::US::Arizona;
+        use cron::Schedule;
+        use std::str::FromStr;
+
+        // April 3, 2026 is a Friday in America/Phoenix timezone
+        let friday_before_10 = Arizona.with_ymd_and_hms(2026, 4, 3, 9, 59, 0).unwrap();
+        assert_eq!(friday_before_10.weekday(), chrono::Weekday::Fri);
+
+        // Standard cron "1-5" = Mon-Fri. After DOW translation, the cron crate
+        // expression should fire on Friday.
+        let expanded = expand_cron_expr("0 10 * * 1-5");
+        let schedule = Schedule::from_str(&expanded).unwrap();
+
+        let next = schedule.after(&friday_before_10).next().unwrap();
+        assert_eq!(
+            next.weekday(),
+            chrono::Weekday::Fri,
+            "dow=1-5 should fire on Friday, but next fire is {:?} ({})",
+            next.weekday(),
+            next
+        );
+    }
+
+    #[test]
+    fn test_cron_dow_saturday_excluded() {
+        use chrono::Datelike;
+        use chrono_tz::US::Arizona;
+        use cron::Schedule;
+        use std::str::FromStr;
+
+        // Saturday should NOT match dow=1-5 (Mon-Fri)
+        let saturday = Arizona.with_ymd_and_hms(2026, 4, 4, 9, 0, 0).unwrap();
+        assert_eq!(saturday.weekday(), chrono::Weekday::Sat);
+
+        let expanded = expand_cron_expr("0 10 * * 1-5");
+        let schedule = Schedule::from_str(&expanded).unwrap();
+
+        let next = schedule.after(&saturday).next().unwrap();
+        assert_eq!(next.weekday(), chrono::Weekday::Mon);
+    }
+
+    #[test]
+    fn test_cron_dow_sunday_as_zero() {
+        use chrono::Datelike;
+        use chrono_tz::US::Arizona;
+        use cron::Schedule;
+        use std::str::FromStr;
+
+        // dow=0 means Sunday in standard cron
+        let saturday = Arizona.with_ymd_and_hms(2026, 4, 4, 9, 0, 0).unwrap();
+        assert_eq!(saturday.weekday(), chrono::Weekday::Sat);
+
+        let expanded = expand_cron_expr("0 10 * * 0");
+        let schedule = Schedule::from_str(&expanded).unwrap();
+
+        let next = schedule.after(&saturday).next().unwrap();
+        assert_eq!(next.weekday(), chrono::Weekday::Sun);
+    }
+
+    use chrono::TimeZone;
+
+    #[test]
+    fn test_expand_cron_expr_dow_translation() {
+        // Wildcard DOW — unchanged
+        assert_eq!(expand_cron_expr("0 * * * *"), "0 0 * * * * *");
+        // Mon-Fri (1-5) → 2-6 in crate convention
+        assert_eq!(expand_cron_expr("30 7 * * 1-5"), "0 30 7 * * 2-6 *");
+        // Sunday (0) → 1
+        assert_eq!(expand_cron_expr("0 9 * * 0"), "0 0 9 * * 1 *");
+        // Sunday (7) → 1
+        assert_eq!(expand_cron_expr("0 9 * * 7"), "0 0 9 * * 1 *");
+        // Mon only (1) → 2
+        assert_eq!(expand_cron_expr("0 9 * * 1"), "0 0 9 * * 2 *");
+        // Sat (6) → 7
+        assert_eq!(expand_cron_expr("0 9 * * 6"), "0 0 9 * * 7 *");
+        // List: Fri,Sat (5,6) → 6,7
+        assert_eq!(expand_cron_expr("0 9 * * 5,6"), "0 0 9 * * 6,7 *");
+        // Range with step: 1-5/2 → 2-6/2
+        assert_eq!(expand_cron_expr("0 9 * * 1-5/2"), "0 0 9 * * 2-6/2 *");
+        // Wildcard with step — unchanged
+        assert_eq!(expand_cron_expr("0 9 * * */2"), "0 0 9 * * */2 *");
+        // Already 6-field, unchanged
+        assert_eq!(expand_cron_expr("0 30 7 * * 2-6"), "0 30 7 * * 2-6");
+    }
+
+    #[test]
+    fn test_translate_dow_field() {
+        use super::translate_dow_field;
+        assert_eq!(translate_dow_field("*"), "*");
+        assert_eq!(translate_dow_field("1-5"), "2-6");
+        assert_eq!(translate_dow_field("0"), "1");
+        assert_eq!(translate_dow_field("7"), "1");
+        assert_eq!(translate_dow_field("0,6"), "1,7");
+        assert_eq!(translate_dow_field("1,3,5"), "2,4,6");
+        assert_eq!(translate_dow_field("*/2"), "*/2");
+        assert_eq!(translate_dow_field("1-5/2"), "2-6/2");
     }
 }
