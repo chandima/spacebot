@@ -1627,6 +1627,10 @@ impl Config {
                     }
                 })
                 .unwrap_or_else(|| base_defaults.projects.clone()),
+            sandbox: toml
+                .defaults
+                .sandbox
+                .unwrap_or_else(|| base_defaults.sandbox.clone()),
         };
 
         let mut agents: Vec<AgentConfig> = toml

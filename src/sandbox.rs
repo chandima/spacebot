@@ -140,6 +140,7 @@ const MACOS_READ_ONLY_SYSTEM_PATHS: &[&str] = &[
     "/Applications",
     "/private/etc",
     "/private/var/run",
+    "/private/var/select",
     "/private/tmp",
     "/etc",
     "/dev",
@@ -867,10 +868,10 @@ impl Sandbox {
 ; dev, sysctl, mach for basic operation
 (allow file-write-data
   (require-all (path "/dev/null") (vnode-type CHARACTER-DEVICE)))
+(allow file-write* (literal "/private/var/run/mDNSResponder"))
 (allow sysctl-read)
-(allow mach-lookup
-  (global-name "com.apple.system.opendirectoryd.libinfo")
-  (global-name "com.apple.trustd"))
+(allow mach-lookup)
+(allow system-socket)
 (allow ipc-posix-sem)
 (allow pseudo-tty)
 (allow network*)

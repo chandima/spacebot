@@ -550,6 +550,8 @@ pub struct DefaultsConfig {
     pub worker_log_mode: crate::settings::WorkerLogMode,
     /// Projects workspace management defaults.
     pub projects: ProjectsConfig,
+    /// Sandbox configuration defaults.
+    pub sandbox: crate::sandbox::SandboxConfig,
 }
 
 impl std::fmt::Debug for DefaultsConfig {
@@ -581,6 +583,7 @@ impl std::fmt::Debug for DefaultsConfig {
             .field("opencode", &self.opencode)
             .field("worker_log_mode", &self.worker_log_mode)
             .field("projects", &self.projects)
+            .field("sandbox", &self.sandbox)
             .finish()
     }
 }
@@ -1295,6 +1298,7 @@ impl Default for DefaultsConfig {
             opencode: OpenCodeConfig::default(),
             worker_log_mode: crate::settings::WorkerLogMode::default(),
             projects: ProjectsConfig::default(),
+            sandbox: crate::sandbox::SandboxConfig::default(),
         }
     }
 }
@@ -1361,7 +1365,7 @@ impl AgentConfig {
                 .or_else(|| defaults.brave_search_key.clone()),
             cron_timezone: resolved_cron_timezone,
             user_timezone: resolved_user_timezone,
-            sandbox: self.sandbox.clone().unwrap_or_default(),
+            sandbox: self.sandbox.clone().unwrap_or_else(|| defaults.sandbox.clone()),
             projects: self
                 .projects
                 .clone()

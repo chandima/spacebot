@@ -294,6 +294,7 @@ pub(super) struct TomlDefaultsConfig {
     pub(super) opencode: Option<TomlOpenCodeConfig>,
     pub(super) worker_log_mode: Option<String>,
     pub(super) projects: Option<TomlProjectsConfig>,
+    pub(super) sandbox: Option<crate::sandbox::SandboxConfig>,
 }
 
 #[derive(Deserialize, Default)]
