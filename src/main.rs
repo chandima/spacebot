@@ -3465,6 +3465,12 @@ async fn initialize_agents(
         tracing::info!(agent_id = %agent_id, "cron scheduler started");
     }
 
+    // Start periodic reconciliation loops that catch cron jobs saved to the DB
+    // but never registered with the scheduler (e.g. due to interrupted tool calls).
+    for scheduler in cron_schedulers_map.values() {
+        scheduler.start_reconciliation_loop();
+    }
+
     // Set cron stores and schedulers on the API state
     api_state.set_cron_stores(cron_stores_map);
     api_state.set_cron_schedulers(cron_schedulers_map);

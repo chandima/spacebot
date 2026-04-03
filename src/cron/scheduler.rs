@@ -625,6 +625,87 @@ impl Scheduler {
 
         Ok(())
     }
+
+    /// Reconcile in-memory scheduler state with the database.
+    ///
+    /// Loads all enabled jobs from the store and registers any that are present
+    /// in the database but missing from the in-memory scheduler. This catches
+    /// jobs that were saved to the DB (e.g. by a tool call or API request) but
+    /// never registered — for example when a tool execution was cancelled
+    /// between the `save()` and `register()` await points.
+    pub async fn reconcile(&self) -> Result<()> {
+        let db_configs = self.context.store.load_all().await?;
+        let last_times = self
+            .context
+            .store
+            .last_execution_times()
+            .await
+            .unwrap_or_default();
+
+        let registered_ids: std::collections::HashSet<String> = {
+            let jobs = self.jobs.read().await;
+            jobs.keys().cloned().collect()
+        };
+
+        let mut registered_count = 0u32;
+        for config in db_configs {
+            if registered_ids.contains(&config.id) {
+                continue;
+            }
+            let cron_id = config.id.clone();
+            let anchor = last_times.get(&cron_id).map(String::as_str);
+            match self.register_with_anchor(config, anchor).await {
+                Ok(()) => {
+                    registered_count += 1;
+                    tracing::info!(
+                        cron_id = %cron_id,
+                        agent_id = %self.context.deps.agent_id,
+                        "reconcile: registered orphaned cron job from database"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        cron_id = %cron_id,
+                        agent_id = %self.context.deps.agent_id,
+                        %error,
+                        "reconcile: failed to register orphaned cron job"
+                    );
+                }
+            }
+        }
+
+        if registered_count > 0 {
+            tracing::info!(
+                agent_id = %self.context.deps.agent_id,
+                registered_count,
+                "reconcile: finished registering orphaned cron jobs"
+            );
+        }
+        Ok(())
+    }
+
+    /// Spawn a background task that periodically reconciles the scheduler with
+    /// the database, catching any jobs saved without scheduler registration.
+    ///
+    /// Returns a `JoinHandle` the caller can abort on shutdown.
+    pub fn start_reconciliation_loop(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let scheduler = Arc::clone(self);
+        tokio::spawn(async move {
+            const INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+            // Delay the first reconciliation to let startup registrations complete.
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            loop {
+                if let Err(error) = scheduler.reconcile().await {
+                    tracing::warn!(
+                        agent_id = %scheduler.context.deps.agent_id,
+                        %error,
+                        "cron reconciliation failed"
+                    );
+                }
+                tokio::time::sleep(INTERVAL).await;
+            }
+        })
+    }
 }
 
 fn cron_timezone_label(context: &CronContext) -> String {
