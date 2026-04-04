@@ -12,7 +12,6 @@ from youtube_mcp import data_api, fallback, transcripts
 
 mcp = FastMCP(
     "YouTube",
-    description="YouTube Data API, transcript extraction, and subtitle fallback for Spacebot",
 )
 
 CREDENTIALS_PATH = os.environ.get(
