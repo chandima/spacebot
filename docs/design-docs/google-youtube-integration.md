@@ -110,7 +110,7 @@ name = "google-workspace"
 transport = "stdio"
 enabled = true
 command = "/Users/chandima/.local/bin/workspace-mcp"
-args = ["--single-user", "--tool-tier", "complete"]
+args = ["--single-user", "--tools", "drive", "docs", "slides", "sheets", "gmail", "calendar"]
 
 [agents.mcp.env]
 WORKSPACE_MCP_OAUTH_PATH = "/Users/chandima/.spacebot/google"

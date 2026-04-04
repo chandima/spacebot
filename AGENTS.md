@@ -177,7 +177,7 @@ Defined at the defaults level in config, overridden per-agent:
 | `searxng` | `mcp-searxng` | All agents | Web search via SearXNG |
 | `microsoft` | `npx @softeria/ms-365-mcp-server` | All agents | Microsoft 365 (calendar, mail, contacts, files) |
 | `notebooklm` | `uvx notebooklm-mcp-cli notebooklm-mcp` | `notebooklm-agent` only | Google NotebookLM |
-| `google-workspace` | `workspace-mcp --single-user --tool-tier complete` | `google-agent` only | Google Drive, Docs, Slides, Sheets, Gmail, Calendar |
+| `google-workspace` | `workspace-mcp --single-user --tools drive docs slides sheets gmail calendar` | `google-agent` only | Google Drive, Docs, Slides, Sheets, Gmail, Calendar |
 | `youtube` | `youtube-mcp` | `google-agent` only | YouTube Data API, transcript extraction, yt-dlp fallback |
 
 ### Cron Jobs
