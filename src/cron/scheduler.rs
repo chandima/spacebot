@@ -1001,6 +1001,52 @@ fn ensure_cron_dispatch_readiness(context: &CronContext, cron_id: &str) {
     }
 }
 
+/// Grace period (seconds) granted after the initial cron timeout when the
+/// channel still has active workers or branches. This lets retrigger replies
+/// arrive instead of being lost to a premature abort.
+const CRON_WORKER_GRACE_SECS: u64 = 180;
+
+/// Collect text responses from a cron channel until `deadline` or the channel closes.
+///
+/// Returns `true` if the channel is still alive (deadline expired), `false` if
+/// the channel closed naturally (all response senders dropped).
+async fn collect_cron_responses(
+    response_rx: &mut tokio::sync::mpsc::Receiver<RoutedResponse>,
+    collected_text: &mut Vec<String>,
+    deadline: tokio::time::Instant,
+    cron_id: &str,
+) -> bool {
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return true; // deadline expired, channel may still be alive
+        }
+        match tokio::time::timeout(remaining, response_rx.recv()).await {
+            Ok(Some(RoutedResponse {
+                response: OutboundResponse::Text(text),
+                ..
+            })) => {
+                tracing::debug!(cron_id, text_len = text.len(), "collected cron response");
+                collected_text.push(text);
+            }
+            Ok(Some(RoutedResponse {
+                response: OutboundResponse::RichMessage { text, .. },
+                ..
+            })) => {
+                tracing::debug!(cron_id, text_len = text.len(), "collected cron rich response");
+                collected_text.push(text);
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return false; // channel closed naturally
+            }
+            Err(_) => {
+                return true; // timeout
+            }
+        }
+    }
+}
+
 /// Execute a single cron job: create a fresh channel, run the prompt, deliver the result.
 #[tracing::instrument(skip(context), fields(cron_id = %job.id, agent_id = %context.deps.agent_id))]
 async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
@@ -1023,6 +1069,10 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
         None, // cron channels don't capture prompt snapshots
         None, // cron channels don't share live transcript cache
     );
+
+    // Grab a handle to the channel's active workers so we can check whether
+    // background work is still running when the initial timeout fires.
+    let active_workers = channel.state.active_workers.clone();
 
     // Spawn the channel's event loop
     let channel_handle = tokio::spawn(async move {
@@ -1059,50 +1109,67 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
         .await
         .map_err(|error| anyhow::anyhow!("failed to send cron prompt to channel: {error}"))?;
 
-    // Collect responses with a timeout. The channel may produce multiple messages
-    // (e.g. status updates, then text). We only care about text responses.
+    // Keep channel_tx alive — dropping it does NOT cause the channel event loop
+    // to exit (the channel's internal self_tx clone keeps message_rx open).
+    // We hold it so the channel can theoretically receive follow-up messages,
+    // and drop it naturally at end-of-function.
+    let _channel_tx = channel_tx;
+
+    // Collect responses with a two-phase timeout:
+    //   Phase 1 — initial timeout (job.timeout_secs, default 120s)
+    //   Phase 2 — grace period (CRON_WORKER_GRACE_SECS) entered only when
+    //             active workers/branches are still running at Phase 1 expiry.
+    // This prevents the common scenario where a cron channel spawns a worker,
+    // the worker produces a full briefing, but the retrigger reply arrives
+    // after the channel has been aborted.
     let mut collected_text = Vec::new();
     let timeout = Duration::from_secs(job.timeout_secs.unwrap_or(120));
 
-    // Drop the sender so the channel knows no more messages are coming.
-    // The channel will process the one message and then its event loop will end
-    // when the sender is dropped (message_rx returns None).
-    drop(channel_tx);
-
     let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            tracing::warn!(cron_id = %job.id, "cron job timed out after {timeout:?}");
-            channel_handle.abort();
-            break;
-        }
-        match tokio::time::timeout(remaining, response_rx.recv()).await {
-            Ok(Some(RoutedResponse {
-                response: OutboundResponse::Text(text),
-                ..
-            })) => {
-                collected_text.push(text);
-            }
-            Ok(Some(RoutedResponse {
-                response: OutboundResponse::RichMessage { text, .. },
-                ..
-            })) => {
-                collected_text.push(text);
-            }
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                break;
-            }
-            Err(_) => {
-                tracing::warn!(cron_id = %job.id, "cron job timed out after {timeout:?}");
+    let channel_alive = collect_cron_responses(
+        &mut response_rx,
+        &mut collected_text,
+        deadline,
+        &job.id,
+    )
+    .await;
+
+    // Phase 2: if the channel is still alive and has active workers, grant a
+    // grace period for retrigger replies to arrive.
+    if channel_alive {
+        let has_active_workers = !active_workers.read().await.is_empty();
+        if has_active_workers {
+            let grace = Duration::from_secs(CRON_WORKER_GRACE_SECS);
+            tracing::info!(
+                cron_id = %job.id,
+                grace_secs = CRON_WORKER_GRACE_SECS,
+                "cron job initial timeout after {timeout:?}, workers still active — entering grace period"
+            );
+            let grace_deadline = tokio::time::Instant::now() + grace;
+            let still_alive = collect_cron_responses(
+                &mut response_rx,
+                &mut collected_text,
+                grace_deadline,
+                &job.id,
+            )
+            .await;
+            if still_alive {
+                tracing::warn!(
+                    cron_id = %job.id,
+                    "cron job grace period expired after {grace:?}, aborting channel"
+                );
                 channel_handle.abort();
-                break;
             }
+        } else {
+            tracing::info!(
+                cron_id = %job.id,
+                "cron job timed out after {timeout:?}, no active workers — aborting channel"
+            );
+            channel_handle.abort();
         }
     }
 
-    // Wait for the channel task to finish (it should already be done since we dropped channel_tx)
+    // Wait for the channel task to finish.
     let _ = channel_handle.await;
 
     let result_text = collected_text.join("\n\n");
