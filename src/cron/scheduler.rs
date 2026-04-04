@@ -1001,51 +1001,13 @@ fn ensure_cron_dispatch_readiness(context: &CronContext, cron_id: &str) {
     }
 }
 
-/// Grace period (seconds) granted after the initial cron timeout when the
-/// channel still has active workers or branches. This lets retrigger replies
-/// arrive instead of being lost to a premature abort.
-const CRON_WORKER_GRACE_SECS: u64 = 180;
+/// How often (seconds) to check whether the cron channel has finished its work
+/// (responses collected, no active workers remaining).
+const CRON_IDLE_POLL_SECS: u64 = 5;
 
-/// Collect text responses from a cron channel until `deadline` or the channel closes.
-///
-/// Returns `true` if the channel is still alive (deadline expired), `false` if
-/// the channel closed naturally (all response senders dropped).
-async fn collect_cron_responses(
-    response_rx: &mut tokio::sync::mpsc::Receiver<RoutedResponse>,
-    collected_text: &mut Vec<String>,
-    deadline: tokio::time::Instant,
-    cron_id: &str,
-) -> bool {
-    loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return true; // deadline expired, channel may still be alive
-        }
-        match tokio::time::timeout(remaining, response_rx.recv()).await {
-            Ok(Some(RoutedResponse {
-                response: OutboundResponse::Text(text),
-                ..
-            })) => {
-                tracing::debug!(cron_id, text_len = text.len(), "collected cron response");
-                collected_text.push(text);
-            }
-            Ok(Some(RoutedResponse {
-                response: OutboundResponse::RichMessage { text, .. },
-                ..
-            })) => {
-                tracing::debug!(cron_id, text_len = text.len(), "collected cron rich response");
-                collected_text.push(text);
-            }
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                return false; // channel closed naturally
-            }
-            Err(_) => {
-                return true; // timeout
-            }
-        }
-    }
-}
+/// After determining the channel is idle, wait this many additional seconds for
+/// any final responses (e.g. a retrigger that just fired) before exiting.
+const CRON_IDLE_DRAIN_SECS: u64 = 5;
 
 /// Execute a single cron job: create a fresh channel, run the prompt, deliver the result.
 #[tracing::instrument(skip(context), fields(cron_id = %job.id, agent_id = %context.deps.agent_id))]
@@ -1115,57 +1077,96 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
     // and drop it naturally at end-of-function.
     let _channel_tx = channel_tx;
 
-    // Collect responses with a two-phase timeout:
-    //   Phase 1 — initial timeout (job.timeout_secs, default 120s)
-    //   Phase 2 — grace period (CRON_WORKER_GRACE_SECS) entered only when
-    //             active workers/branches are still running at Phase 1 expiry.
-    // This prevents the common scenario where a cron channel spawns a worker,
-    // the worker produces a full briefing, but the retrigger reply arrives
-    // after the channel has been aborted.
+    // Collect responses with an adaptive timeout. Instead of blocking for the
+    // full timeout_secs (which wastes minutes on fast jobs), we poll every
+    // CRON_IDLE_POLL_SECS and check whether the channel has finished its work:
+    //   - responses collected AND no active workers → start idle drain
+    //   - idle drain (CRON_IDLE_DRAIN_SECS) expires → exit immediately
+    //   - hard deadline (timeout_secs) → abort as safety net
+    //
+    // This means a simple 5-second cron job exits in ~15s total, while a
+    // worker-based job waits exactly as long as needed for the retrigger reply.
     let mut collected_text = Vec::new();
     let timeout = Duration::from_secs(job.timeout_secs.unwrap_or(120));
+    let hard_deadline = tokio::time::Instant::now() + timeout;
+    let mut idle_drain_deadline: Option<tokio::time::Instant> = None;
 
-    let deadline = tokio::time::Instant::now() + timeout;
-    let channel_alive = collect_cron_responses(
-        &mut response_rx,
-        &mut collected_text,
-        deadline,
-        &job.id,
-    )
-    .await;
+    loop {
+        let now = tokio::time::Instant::now();
 
-    // Phase 2: if the channel is still alive and has active workers, grant a
-    // grace period for retrigger replies to arrive.
-    if channel_alive {
-        let has_active_workers = !active_workers.read().await.is_empty();
-        if has_active_workers {
-            let grace = Duration::from_secs(CRON_WORKER_GRACE_SECS);
+        // Hard deadline — safety net.
+        if now >= hard_deadline {
+            tracing::warn!(cron_id = %job.id, "cron job hard deadline reached after {timeout:?}");
+            channel_handle.abort();
+            break;
+        }
+
+        // Idle drain complete — workers finished, final responses drained.
+        if idle_drain_deadline.is_some_and(|d| now >= d) {
             tracing::info!(
                 cron_id = %job.id,
-                grace_secs = CRON_WORKER_GRACE_SECS,
-                "cron job initial timeout after {timeout:?}, workers still active — entering grace period"
-            );
-            let grace_deadline = tokio::time::Instant::now() + grace;
-            let still_alive = collect_cron_responses(
-                &mut response_rx,
-                &mut collected_text,
-                grace_deadline,
-                &job.id,
-            )
-            .await;
-            if still_alive {
-                tracing::warn!(
-                    cron_id = %job.id,
-                    "cron job grace period expired after {grace:?}, aborting channel"
-                );
-                channel_handle.abort();
-            }
-        } else {
-            tracing::info!(
-                cron_id = %job.id,
-                "cron job timed out after {timeout:?}, no active workers — aborting channel"
+                collected = collected_text.len(),
+                "cron job idle drain complete — exiting early"
             );
             channel_handle.abort();
+            break;
+        }
+
+        // Use a short poll interval so we can periodically check worker status.
+        // During idle drain, poll more tightly (1s) to catch any final messages.
+        let poll_secs = if idle_drain_deadline.is_some() {
+            1
+        } else {
+            CRON_IDLE_POLL_SECS
+        };
+        let poll_dur =
+            Duration::from_secs(poll_secs).min(hard_deadline.saturating_duration_since(now));
+
+        match tokio::time::timeout(poll_dur, response_rx.recv()).await {
+            Ok(Some(RoutedResponse {
+                response: OutboundResponse::Text(text),
+                ..
+            })) => {
+                tracing::debug!(
+                    cron_id = %job.id,
+                    text_len = text.len(),
+                    "collected cron response"
+                );
+                collected_text.push(text);
+                idle_drain_deadline = None; // new content arrived, reset idle drain
+            }
+            Ok(Some(RoutedResponse {
+                response: OutboundResponse::RichMessage { text, .. },
+                ..
+            })) => {
+                tracing::debug!(
+                    cron_id = %job.id,
+                    text_len = text.len(),
+                    "collected cron rich response"
+                );
+                collected_text.push(text);
+                idle_drain_deadline = None;
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => break, // channel closed naturally
+            Err(_) => {
+                // Poll timeout — check if the channel has finished its work.
+                // Start idle drain when we have responses and no workers are running.
+                if !collected_text.is_empty() && idle_drain_deadline.is_none() {
+                    let workers_empty = active_workers.read().await.is_empty();
+                    if workers_empty {
+                        idle_drain_deadline = Some(
+                            tokio::time::Instant::now()
+                                + Duration::from_secs(CRON_IDLE_DRAIN_SECS),
+                        );
+                        tracing::info!(
+                            cron_id = %job.id,
+                            collected = collected_text.len(),
+                            "no active workers — starting idle drain"
+                        );
+                    }
+                }
+            }
         }
     }
 
