@@ -18,7 +18,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Tool for delegating tasks to other agents through the agent communication graph.
 ///
@@ -41,6 +41,9 @@ pub struct SendAgentMessageTool {
     /// Set per-turn so task completion notifications route back to the right place.
     originating_channel: Option<String>,
     working_memory: Option<Arc<crate::memory::WorkingMemoryStore>>,
+    /// Shared counter for in-flight delegations so the cron idle-drain can wait
+    /// for delegation results before closing the channel.
+    pending_delegations: Option<Arc<AtomicU32>>,
 }
 
 impl std::fmt::Debug for SendAgentMessageTool {
@@ -68,6 +71,7 @@ impl SendAgentMessageTool {
             skip_flag: None,
             originating_channel: None,
             working_memory: None,
+            pending_delegations: None,
         }
     }
 
@@ -86,6 +90,11 @@ impl SendAgentMessageTool {
 
     pub fn with_working_memory(mut self, store: Arc<crate::memory::WorkingMemoryStore>) -> Self {
         self.working_memory = Some(store);
+        self
+    }
+
+    pub fn with_pending_delegations(mut self, counter: Arc<AtomicU32>) -> Self {
+        self.pending_delegations = Some(counter);
         self
     }
 
@@ -245,6 +254,12 @@ impl Tool for SendAgentMessageTool {
             })?;
 
         let task_number = task.task_number;
+
+        // Signal to the cron idle-drain that a delegation is in flight.
+        if let Some(ref counter) = self.pending_delegations {
+            counter.fetch_add(1, Ordering::Relaxed);
+            tracing::info!(task_number, "incremented pending_delegations for delegation");
+        }
 
         // Log delegation record in the link channel (system message).
         let sender_display = self

@@ -250,6 +250,7 @@ async fn dump_channel_context() {
         live_worker_transcripts: Arc::new(tokio::sync::RwLock::new(
             std::collections::HashMap::new(),
         )),
+        pending_delegations: Arc::new(std::sync::atomic::AtomicU32::new(0)),
     };
 
     let tool_server = rig::tool::server::ToolServer::new().run();
@@ -490,6 +491,7 @@ async fn dump_all_contexts() {
         live_worker_transcripts: Arc::new(tokio::sync::RwLock::new(
             std::collections::HashMap::new(),
         )),
+        pending_delegations: Arc::new(std::sync::atomic::AtomicU32::new(0)),
     };
     let channel_tool_server = rig::tool::server::ToolServer::new().run();
     let skip_flag = spacebot::tools::new_skip_flag();

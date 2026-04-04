@@ -428,6 +428,7 @@ pub async fn add_channel_tools(
             ))
             .await?;
     }
+    let pending_delegations = state.pending_delegations.clone();
     handle.add_tool(CancelTool::new(state)).await?;
     handle
         .add_tool(SkipTool::new(skip_flag.clone(), response_tx.clone()))
@@ -443,7 +444,9 @@ pub async fn add_channel_tools(
         handle.add_tool(cron_tool).await?;
     }
     if let Some(mut agent_msg) = send_agent_message_tool {
-        agent_msg = agent_msg.with_skip_flag(skip_flag.clone());
+        agent_msg = agent_msg
+            .with_skip_flag(skip_flag.clone())
+            .with_pending_delegations(pending_delegations);
         handle.add_tool(agent_msg).await?;
     }
     Ok(())

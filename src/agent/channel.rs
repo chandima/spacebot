@@ -30,6 +30,7 @@ use rig::one_or_many::OneOrMany;
 use rig::tool::server::ToolServer;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 use tokio::sync::broadcast;
 use tokio::sync::{RwLock, mpsc};
@@ -124,6 +125,11 @@ pub struct ChannelState {
     /// `ToolStarted`/`ToolCompleted` events as they flow through the system.
     /// Defaults to a standalone empty map when the API layer is not active.
     pub live_worker_transcripts: LiveWorkerTranscripts,
+    /// Count of in-flight `send_agent_message` delegations whose results have
+    /// not yet been injected back into this channel. The cron idle-drain polls
+    /// this alongside `active_workers` to avoid closing the channel before
+    /// delegation results arrive.
+    pub pending_delegations: Arc<AtomicU32>,
 }
 
 impl ChannelState {
@@ -534,6 +540,7 @@ impl Channel {
             prompt_snapshot_store,
             live_worker_transcripts: live_worker_transcripts
                 .unwrap_or_else(|| Arc::new(RwLock::new(HashMap::new()))),
+            pending_delegations: Arc::new(AtomicU32::new(0)),
         };
 
         // Each channel gets its own isolated tool server to avoid races between
@@ -1615,6 +1622,15 @@ impl Channel {
             "handling message"
         );
 
+        // Track whether this message is a delegation completion so we can
+        // decrement pending_delegations AFTER the agent turn completes (and
+        // the reply has been sent through response_tx). Decrementing early
+        // would let the cron idle-drain start before the reply arrives.
+        let is_delegation_completion = message
+            .metadata
+            .get("delegation_completion")
+            .is_some_and(|v| v.as_str() == Some("true"));
+
         #[cfg(feature = "metrics")]
         let _duration_guard = {
             let channel_type = if message.source != "system" {
@@ -1944,6 +1960,21 @@ impl Channel {
             self.retrigger_count = 0;
             self.message_count += 1;
             self.check_memory_persistence().await;
+        }
+
+        // Decrement pending_delegations AFTER the agent turn so the reply has
+        // been sent through response_tx before the cron scheduler can see the
+        // counter reach zero and start its idle drain.
+        if is_delegation_completion {
+            let prev = self
+                .state
+                .pending_delegations
+                .fetch_sub(1, Ordering::Relaxed);
+            tracing::info!(
+                channel_id = %self.id,
+                remaining = prev.saturating_sub(1),
+                "delegation completion processed, decremented pending_delegations"
+            );
         }
 
         Ok(())

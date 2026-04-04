@@ -1604,6 +1604,14 @@ async fn run(
     );
     api_state.auth_token = config.api.auth_token.clone();
     api_state.set_task_store(global_task_store.clone());
+
+    // Shared channel registry for ephemeral channels (cron jobs) to receive
+    // cross-agent injection messages. Created here so it's shared between the
+    // main loop injection consumer, the API state, and all cron schedulers.
+    let channel_registry: spacebot::ChannelRegistry =
+        Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+    api_state.channel_registry = channel_registry.clone();
+
     let api_state = Arc::new(api_state);
 
     // Keep the secrets API available in setup mode so encrypted stores can be
@@ -2294,11 +2302,30 @@ async fn run(
                         );
                     }
                 } else {
-                    tracing::info!(
-                        conversation_id = %injection.conversation_id,
-                        agent_id = %injection.agent_id,
-                        "injection target channel not active, notification will be delivered on next message"
-                    );
+                    // Check the shared channel registry (cron channels, etc.)
+                    let registry = channel_registry.read().await;
+                    if let Some(tx) = registry.get(&injection.conversation_id) {
+                        if let Err(error) = tx.send(injection.message).await {
+                            tracing::warn!(
+                                %error,
+                                conversation_id = %injection.conversation_id,
+                                agent_id = %injection.agent_id,
+                                "failed to forward injection to registered channel"
+                            );
+                        } else {
+                            tracing::info!(
+                                conversation_id = %injection.conversation_id,
+                                agent_id = %injection.agent_id,
+                                "forwarded cross-agent injection to registered channel (cron)"
+                            );
+                        }
+                    } else {
+                        tracing::info!(
+                            conversation_id = %injection.conversation_id,
+                            agent_id = %injection.agent_id,
+                            "injection target channel not active, notification will be delivered on next message"
+                        );
+                    }
                 }
             }
             Some(_event) = provider_rx.recv(), if !agents_initialized => {
@@ -3418,6 +3445,7 @@ async fn initialize_agents(
             logs_dir: agent.config.logs_dir(),
             messaging_manager: messaging_manager.clone(),
             store: store.clone(),
+            channel_registry: api_state.channel_registry.clone(),
         };
 
         let scheduler = Arc::new(spacebot::cron::Scheduler::new(cron_context));

@@ -99,6 +99,52 @@ update-frontend-hash:
     echo "  2. Test the build: nix build .#frontend"
     echo "  3. Commit the changes: git add nix/default.nix && git commit -m 'update: frontend node_modules hash'"
 
+# Build a release binary, codesign it, and deploy to ~/.local/bin.
+# Restarts the launchd service if the plist is loaded.
+deploy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    export RUSTC_WRAPPER="$(which sccache 2>/dev/null || true)"
+    if [ -z "$RUSTC_WRAPPER" ]; then
+        echo "warning: sccache not found — build will be slower"
+        unset RUSTC_WRAPPER
+    fi
+
+    echo "==> Building release binary..."
+    cargo build --release
+
+    dest="$HOME/.local/bin/spacebot"
+    mkdir -p "$(dirname "$dest")"
+    cp target/release/spacebot "$dest"
+    echo "==> Installed to $dest"
+
+    # Install the launchd crash-loop wrapper alongside the binary
+    cp scripts/launchd-wrapper.sh "$HOME/.local/bin/spacebot-wrapper.sh"
+    chmod +x "$HOME/.local/bin/spacebot-wrapper.sh"
+
+    # macOS: ad-hoc codesign (sccache builds invalidate the signature)
+    if [ "$(uname)" = "Darwin" ]; then
+        codesign -s - -f "$dest"
+        echo "==> Code-signed (ad-hoc)"
+    fi
+
+    # Restart launchd service if loaded
+    plist="$HOME/Library/LaunchAgents/com.spacebot.agent.plist"
+    if [ -f "$plist" ] && launchctl list com.spacebot.agent &>/dev/null; then
+        echo "==> Restarting launchd service..."
+        launchctl unload "$plist"
+        # Clean stale state and reset crash counter
+        rm -f "$HOME/.spacebot/spacebot.pid" "$HOME/.spacebot/spacebot.sock" "$HOME/.spacebot/crash_count"
+        sleep 1
+        launchctl load "$plist"
+        echo "==> Service restarted"
+    else
+        echo "==> No launchd service loaded — skipping restart"
+    fi
+
+    echo "==> Deploy complete"
+
 # Update all Nix flake inputs (flake.lock).
 # Use this when you want to update dependencies like nixpkgs, crane, etc.
 update-flake:

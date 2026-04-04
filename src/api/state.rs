@@ -140,6 +140,8 @@ pub struct ApiState {
     /// Serializes SSH daemon enable/disable transitions to prevent races
     /// between overlapping toggle requests.
     pub ssh_mutex: tokio::sync::Mutex<()>,
+    /// Shared channel registry for ephemeral channels (cron) to receive injections.
+    pub channel_registry: crate::ChannelRegistry,
 }
 
 /// Events sent to SSE clients. Wraps ProcessEvents with agent context.
@@ -333,6 +335,7 @@ impl ApiState {
             agent_humans: ArcSwap::from_pointee(Vec::new()),
             live_worker_transcripts: Arc::new(RwLock::new(HashMap::new())),
             ssh_mutex: tokio::sync::Mutex::new(()),
+            channel_registry: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
     }
 

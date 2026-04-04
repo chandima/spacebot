@@ -934,6 +934,7 @@ pub async fn create_agent_internal(
         logs_dir: agent_config.logs_dir(),
         messaging_manager: messaging_manager.clone(),
         store: cron_store.clone(),
+        channel_registry: state.channel_registry.clone(),
     };
     let scheduler = std::sync::Arc::new(crate::cron::Scheduler::new(cron_context));
     runtime_config.set_cron(cron_store.clone(), scheduler.clone());

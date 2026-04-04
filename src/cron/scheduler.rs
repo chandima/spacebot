@@ -79,6 +79,8 @@ pub struct CronContext {
     pub logs_dir: std::path::PathBuf,
     pub messaging_manager: Arc<MessagingManager>,
     pub store: Arc<CronStore>,
+    /// Shared registry so cron channels can receive cross-agent injections.
+    pub channel_registry: crate::ChannelRegistry,
 }
 
 const MAX_CONSECUTIVE_FAILURES: u32 = 3;
@@ -504,6 +506,11 @@ impl Scheduler {
     }
 
     /// Trigger a cron job immediately, outside the timer loop.
+    ///
+    /// Spawns the job in an independent task (like scheduled triggers) so the
+    /// response collection loop is not tied to the caller's lifetime. This
+    /// prevents `response_rx` from being dropped if the calling HTTP handler
+    /// is cancelled.
     pub async fn trigger_now(&self, job_id: &str) -> Result<()> {
         let job = {
             let jobs = self.jobs.read().await;
@@ -518,7 +525,70 @@ impl Scheduler {
             }
 
             tracing::info!(cron_id = %job_id, "cron job triggered manually");
-            run_cron_job(&job, &self.context).await
+
+            let exec_context = self.context.clone();
+            let exec_jobs = self.jobs.clone();
+            let exec_job_id = job_id.to_owned();
+
+            tokio::spawn(async move {
+                match run_cron_job(&job, &exec_context).await {
+                    Ok(()) => {
+                        #[cfg(feature = "metrics")]
+                        crate::telemetry::Metrics::global()
+                            .cron_executions_total
+                            .with_label_values(&[
+                                &exec_context.deps.agent_id,
+                                &exec_job_id,
+                                "success",
+                            ])
+                            .inc();
+
+                        exec_context
+                            .deps
+                            .working_memory
+                            .emit(
+                                crate::memory::WorkingMemoryEventType::CronExecuted,
+                                format!("Cron completed (manual): {exec_job_id}"),
+                            )
+                            .importance(0.4)
+                            .record();
+
+                        let mut j = exec_jobs.write().await;
+                        if let Some(j) = j.get_mut(&exec_job_id) {
+                            j.consecutive_failures = 0;
+                        }
+                    }
+                    Err(error) => {
+                        #[cfg(feature = "metrics")]
+                        crate::telemetry::Metrics::global()
+                            .cron_executions_total
+                            .with_label_values(&[
+                                &exec_context.deps.agent_id,
+                                &exec_job_id,
+                                "failure",
+                            ])
+                            .inc();
+
+                        exec_context
+                            .deps
+                            .working_memory
+                            .emit(
+                                crate::memory::WorkingMemoryEventType::Error,
+                                format!("Cron failed (manual): {exec_job_id}: {error}"),
+                            )
+                            .importance(0.8)
+                            .record();
+
+                        tracing::error!(
+                            cron_id = %exec_job_id,
+                            %error,
+                            "manually triggered cron job execution failed"
+                        );
+                    }
+                }
+            });
+
+            Ok(())
         } else {
             Err(crate::error::Error::Other(anyhow::anyhow!(
                 "cron job not found"
@@ -1035,6 +1105,7 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
     // Grab a handle to the channel's active workers so we can check whether
     // background work is still running when the initial timeout fires.
     let active_workers = channel.state.active_workers.clone();
+    let pending_delegations = channel.state.pending_delegations.clone();
 
     // Spawn the channel's event loop
     let channel_handle = tokio::spawn(async move {
@@ -1070,6 +1141,15 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
         .send(message)
         .await
         .map_err(|error| anyhow::anyhow!("failed to send cron prompt to channel: {error}"))?;
+
+    // Register the cron channel's message_tx in the shared channel registry so
+    // cross-agent injection messages (delegation completions) can reach it.
+    let channel_id_str = channel_id.to_string();
+    context
+        .channel_registry
+        .write()
+        .await
+        .insert(channel_id_str.clone(), channel_tx.clone());
 
     // Keep channel_tx alive — dropping it does NOT cause the channel event loop
     // to exit (the channel's internal self_tx clone keeps message_rx open).
@@ -1151,10 +1231,13 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
             Ok(None) => break, // channel closed naturally
             Err(_) => {
                 // Poll timeout — check if the channel has finished its work.
-                // Start idle drain when we have responses and no workers are running.
+                // Start idle drain when we have responses and no workers or
+                // delegations are pending.
                 if !collected_text.is_empty() && idle_drain_deadline.is_none() {
                     let workers_empty = active_workers.read().await.is_empty();
-                    if workers_empty {
+                    let delegations_empty =
+                        pending_delegations.load(std::sync::atomic::Ordering::Relaxed) == 0;
+                    if workers_empty && delegations_empty {
                         idle_drain_deadline = Some(
                             tokio::time::Instant::now()
                                 + Duration::from_secs(CRON_IDLE_DRAIN_SECS),
@@ -1162,7 +1245,7 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
                         tracing::info!(
                             cron_id = %job.id,
                             collected = collected_text.len(),
-                            "no active workers — starting idle drain"
+                            "no active workers or delegations — starting idle drain"
                         );
                     }
                 }
@@ -1172,6 +1255,13 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
 
     // Wait for the channel task to finish.
     let _ = channel_handle.await;
+
+    // Unregister the cron channel from the shared registry.
+    context
+        .channel_registry
+        .write()
+        .await
+        .remove(&channel_id_str);
 
     let result_text = collected_text.join("\n\n");
     let has_result = !result_text.trim().is_empty();

@@ -3924,7 +3924,10 @@ async fn notify_delegation_completion(
             agent_id: Some(delegating_agent_id.to_string().into()),
             content: crate::MessageContent::Text(notification_text),
             timestamp: chrono::Utc::now(),
-            metadata: std::collections::HashMap::new(),
+            metadata: std::collections::HashMap::from([(
+                "delegation_completion".to_string(),
+                serde_json::Value::String("true".to_string()),
+            )]),
             formatted_author: None,
         },
     };
