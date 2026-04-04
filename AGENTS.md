@@ -137,11 +137,12 @@ The deployed instance (`~/.spacebot/config.toml`) defines a multi-agent system w
             ┌──────┬───────┼───────┬──────────┐
             ▼      ▼       ▼       ▼          ▼
       ┌─────────┐┌──────┐┌────────┐┌────────┐┌───────────┐
-      │ slack   ││archi-││ coder  ││reviewer││notebooklm│
-      │ agent   ││tect  ││ agent  ││ agent  ││  agent   │
-      └─────────┘└──────┘└────────┘└────────┘└───────────┘
-      Enterprise  Design  TDD impl  Code      NotebookLM
-      Slack MCP   + scope  (OpenCode) review    research
+      │ slack   ││archi-││ coder  ││reviewer││notebooklm││google │
+      │ agent   ││tect  ││ agent  ││ agent  ││  agent   ││ agent │
+      └─────────┘└──────┘└────────┘└────────┘└───────────┘└───────┘
+      Enterprise  Design  TDD impl  Code      NotebookLM   Google
+      Slack MCP   + scope  (OpenCode) review    research   Workspace
+                                                          + YouTube
 ```
 
 ### Agent Definitions
@@ -154,6 +155,7 @@ The deployed instance (`~/.spacebot/config.toml`) defines a multi-agent system w
 | `coder-agent` | Coder | TDD implementation specialist. Writes code via OpenCode workers. | Codex model routing (`gpt-5.3-codex`), OpenCode subprocess workers |
 | `reviewer-agent` | Reviewer | Three-phase adversarial code review and QA verification. | Alternative model (`kimi-k2.5`) for diverse perspective |
 | `notebooklm-agent` | NotebookLM | Research, knowledge management, and content generation. | NotebookLM MCP server (`notebooklm-mcp-cli`) |
+| `google-agent` | Google | Google Workspace and YouTube specialist. Drive, Docs, Slides, Sheets, Gmail, Calendar, YouTube search, subscriptions, and transcript extraction. | Google Workspace MCP (`workspace-mcp`), custom YouTube MCP (`youtube-mcp`) |
 
 ### Slack Integration Architecture
 
@@ -175,6 +177,8 @@ Defined at the defaults level in config, overridden per-agent:
 | `searxng` | `mcp-searxng` | All agents | Web search via SearXNG |
 | `microsoft` | `npx @softeria/ms-365-mcp-server` | All agents | Microsoft 365 (calendar, mail, contacts, files) |
 | `notebooklm` | `uvx notebooklm-mcp-cli notebooklm-mcp` | `notebooklm-agent` only | Google NotebookLM |
+| `google-workspace` | `workspace-mcp --single-user --tool-tier complete` | `google-agent` only | Google Drive, Docs, Slides, Sheets, Gmail, Calendar |
+| `youtube` | `youtube-mcp` | `google-agent` only | YouTube Data API, transcript extraction, yt-dlp fallback |
 
 ### Cron Jobs
 
@@ -577,3 +581,4 @@ These are validated patterns from research (see `docs/research/pattern-analysis.
 - `docs/design-docs/tool-nudging.md` — worker outcome gate / retry nudging
 - `docs/design-docs/sandbox.md` — sandbox implementation (shell/file isolation)
 - `docs/design-docs/working-memory.md` — working memory system (situational awareness)
+- `docs/design-docs/google-youtube-integration.md` — Google Workspace + YouTube MCP integration
