@@ -308,30 +308,41 @@ impl LlmManager {
             .and_then(|credentials| credentials.account_id.clone())
     }
 
-    /// Get a valid GitHub Copilot API token, exchanging/refreshing as needed.
+    /// Get a valid GitHub Copilot API token, using device flow or PAT exchange.
     ///
-    /// Reads the GitHub PAT from the `github-copilot` provider config, checks
-    /// whether the cached Copilot token is still valid, and exchanges for a new
-    /// one if expired or missing. Saves refreshed tokens to disk.
+    /// Priority:
+    /// 1. Cached device flow token (never expires, no PAT needed)
+    /// 2. PAT exchange: reads GitHub PAT from config, exchanges for Copilot token
     pub async fn get_copilot_token(&self) -> Result<Option<String>> {
-        // Check if there's a github-copilot provider configured with a PAT
+        // Check cached token first — device flow tokens never expire
+        {
+            let token_guard = self.copilot_token.read().await;
+            if let Some(ref cached) = *token_guard
+                && !cached.is_expired()
+            {
+                // Device flow token: always valid (no PAT check needed)
+                if cached.is_device_flow() {
+                    return Ok(Some(cached.token.clone()));
+                }
+                // PAT exchange token: validate PAT hash still matches
+                if let Ok(provider) = self.get_provider("github-copilot")
+                    && !provider.api_key.is_empty()
+                {
+                    let pat_hash = crate::github_copilot_auth::hash_pat(&provider.api_key);
+                    if cached.pat_hash == pat_hash {
+                        return Ok(Some(cached.token.clone()));
+                    }
+                }
+            }
+        } // read lock dropped
+
+        // No valid cached token — try PAT exchange as fallback
         let github_pat = match self.get_provider("github-copilot") {
             Ok(provider) if !provider.api_key.is_empty() => provider.api_key,
             _ => return Ok(None),
         };
 
         let pat_hash = crate::github_copilot_auth::hash_pat(&github_pat);
-
-        // Check cached token — must be unexpired AND for the same PAT
-        {
-            let token_guard = self.copilot_token.read().await;
-            if let Some(ref cached) = *token_guard
-                && !cached.is_expired()
-                && cached.pat_hash == pat_hash
-            {
-                return Ok(Some(cached.token.clone()));
-            }
-        } // read lock dropped here before network call
 
         // Need to exchange
         tracing::info!("exchanging GitHub PAT for Copilot API token...");
@@ -397,6 +408,11 @@ impl LlmManager {
                     "user-agent".to_string(),
                     format!("spacebot/{}", env!("CARGO_PKG_VERSION")),
                 ),
+                ("x-initiator".to_string(), "agent".to_string()),
+                (
+                    "Openai-Intent".to_string(),
+                    "conversation-edits".to_string(),
+                ),
                 (
                     "editor-version".to_string(),
                     COPILOT_EDITOR_VERSION.to_string(),
@@ -416,6 +432,11 @@ impl LlmManager {
     /// if persistent removal is needed (e.g., in `delete_provider`).
     pub async fn clear_copilot_token(&self) {
         *self.copilot_token.write().await = None;
+    }
+
+    /// Set a Copilot token in memory (e.g. after device flow auth).
+    pub async fn set_copilot_token(&self, token: CopilotToken) {
+        *self.copilot_token.write().await = Some(token);
     }
 
     /// Get the appropriate API key for a provider.

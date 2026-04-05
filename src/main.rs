@@ -56,11 +56,17 @@ enum Command {
 
 #[derive(Subcommand)]
 enum AuthCommand {
-    /// Log in to Anthropic via OAuth (opens browser)
+    /// Log in to a provider via OAuth
     Login {
-        /// Use API console instead of Claude Pro/Max
+        /// Use API console instead of Claude Pro/Max (Anthropic only)
         #[arg(long)]
         console: bool,
+        /// Authenticate with GitHub Copilot via device flow
+        #[arg(long)]
+        copilot: bool,
+        /// Authenticate with OpenAI ChatGPT via device code flow
+        #[arg(long)]
+        openai: bool,
     },
     /// Show current auth status
     Status,
@@ -560,42 +566,144 @@ fn cmd_auth(config_path: Option<std::path::PathBuf>, auth_cmd: AuthCommand) -> a
 
     runtime.block_on(async {
         match auth_cmd {
-            AuthCommand::Login { console } => {
-                let mode = if console {
-                    spacebot::auth::AuthMode::Console
+            AuthCommand::Login {
+                console,
+                copilot,
+                openai,
+            } => {
+                if copilot {
+                    // GitHub Copilot device flow
+                    spacebot::github_copilot_auth::login_device_flow_interactive(&instance_dir)
+                        .await?;
+                } else if openai {
+                    // OpenAI ChatGPT device code flow
+                    let device = spacebot::openai_auth::request_device_code().await?;
+                    let verification_url =
+                        spacebot::openai_auth::device_verification_url(&device);
+                    eprintln!("\nGo to: {verification_url}\n");
+                    eprintln!("Enter code: {}\n", device.user_code);
+                    if let Err(_error) = open::that(&verification_url) {
+                        eprintln!(
+                            "(Could not open browser automatically, please copy the URL above)"
+                        );
+                    }
+                    eprintln!("Waiting for authorization...");
+
+                    let interval = device.interval.unwrap_or(5).max(1);
+                    let timeout_secs = device.expires_in.unwrap_or(900);
+                    let start = std::time::Instant::now();
+                    let mut poll_interval_ms = interval * 1000 + 3_000;
+
+                    loop {
+                        if start.elapsed().as_secs() > timeout_secs {
+                            anyhow::bail!("device code expired — please try again");
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(poll_interval_ms))
+                            .await;
+
+                        match spacebot::openai_auth::poll_device_token(
+                            &device.device_auth_id,
+                            &device.user_code,
+                        )
+                        .await?
+                        {
+                            spacebot::openai_auth::DeviceTokenPollResult::Approved(grant) => {
+                                let creds = spacebot::openai_auth::exchange_device_code(
+                                    &grant.authorization_code,
+                                    &grant.code_verifier,
+                                )
+                                .await?;
+                                spacebot::openai_auth::save_credentials(&instance_dir, &creds)?;
+                                eprintln!(
+                                    "\n✓ OpenAI ChatGPT authenticated.\n  Credentials saved to {}",
+                                    spacebot::openai_auth::credentials_path(&instance_dir)
+                                        .display()
+                                );
+                                break;
+                            }
+                            spacebot::openai_auth::DeviceTokenPollResult::Pending => {}
+                            spacebot::openai_auth::DeviceTokenPollResult::SlowDown => {
+                                poll_interval_ms += 5_000;
+                            }
+                        }
+                    }
                 } else {
-                    spacebot::auth::AuthMode::Max
-                };
-                spacebot::auth::login_interactive(&instance_dir, mode).await?;
+                    // Anthropic OAuth (default)
+                    let mode = if console {
+                        spacebot::auth::AuthMode::Console
+                    } else {
+                        spacebot::auth::AuthMode::Max
+                    };
+                    spacebot::auth::login_interactive(&instance_dir, mode).await?;
+                }
                 Ok(())
             }
             AuthCommand::Status => {
+                let mut any_found = false;
+
+                // Anthropic
                 match spacebot::auth::load_credentials(&instance_dir)? {
                     Some(creds) => {
+                        any_found = true;
                         let expires_in = creds.expires_at - chrono::Utc::now().timestamp_millis();
                         let expires_min = expires_in / 60_000;
                         if creds.is_expired() {
                             eprintln!("Anthropic OAuth: expired ({}m ago)", -expires_min);
                         } else {
-                            eprintln!("Anthropic OAuth: valid (expires in {}m)", expires_min);
+                            eprintln!("Anthropic OAuth: ✓ valid (expires in {}m)", expires_min);
                         }
-                        eprintln!(
-                            "  access token: <redacted> ({} bytes)",
-                            creds.access_token.len()
-                        );
-                        eprintln!(
-                            "  refresh token: <redacted> ({} bytes)",
-                            creds.refresh_token.len()
-                        );
-                        eprintln!(
-                            "  credentials file: {}",
-                            spacebot::auth::credentials_path(&instance_dir).display()
-                        );
                     }
                     None => {
-                        eprintln!("No OAuth credentials found.");
-                        eprintln!("Run `spacebot auth login` to authenticate.");
+                        eprintln!("Anthropic OAuth: not configured");
                     }
+                }
+
+                // OpenAI ChatGPT
+                match spacebot::openai_auth::load_credentials(&instance_dir)? {
+                    Some(creds) => {
+                        any_found = true;
+                        let expires_in = creds.expires_at - chrono::Utc::now().timestamp_millis();
+                        let expires_min = expires_in / 60_000;
+                        if creds.is_expired() {
+                            eprintln!("OpenAI ChatGPT: expired ({}m ago)", -expires_min);
+                        } else {
+                            eprintln!("OpenAI ChatGPT: ✓ valid (expires in {}m)", expires_min);
+                        }
+                        if let Some(ref account_id) = creds.account_id {
+                            eprintln!("  account: {account_id}");
+                        }
+                    }
+                    None => {
+                        eprintln!("OpenAI ChatGPT: not configured");
+                    }
+                }
+
+                // GitHub Copilot
+                match spacebot::github_copilot_auth::load_cached_token(&instance_dir)? {
+                    Some(token) => {
+                        any_found = true;
+                        if token.is_device_flow() {
+                            eprintln!("GitHub Copilot: ✓ active (device flow, no expiry)");
+                        } else if token.is_expired() {
+                            eprintln!("GitHub Copilot: expired (PAT exchange)");
+                        } else {
+                            let expires_in =
+                                token.expires_at_ms - chrono::Utc::now().timestamp_millis();
+                            eprintln!(
+                                "GitHub Copilot: ✓ valid (PAT exchange, {}m remaining)",
+                                expires_in / 60_000
+                            );
+                        }
+                    }
+                    None => {
+                        eprintln!("GitHub Copilot: not configured");
+                    }
+                }
+
+                if !any_found {
+                    eprintln!(
+                        "\nRun `spacebot auth login` (Anthropic), `--copilot`, or `--openai`."
+                    );
                 }
                 Ok(())
             }

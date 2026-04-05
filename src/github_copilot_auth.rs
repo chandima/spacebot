@@ -1,9 +1,13 @@
-//! GitHub Copilot token exchange, caching, and base URL derivation.
+//! GitHub Copilot authentication, token exchange, caching, and base URL derivation.
 //!
-//! The user provides a GitHub PAT (e.g. from `gh auth token`). This module
-//! exchanges it for a short-lived Copilot API token via the internal GitHub
-//! endpoint, caches the result on disk, and derives the provider base URL
-//! from the token's embedded `proxy-ep` field.
+//! Two auth methods:
+//! - **Device flow** (preferred): GitHub OAuth device code grant. The user enters
+//!   a code at `github.com/login/device` and the resulting GitHub access token is
+//!   used directly as Bearer against `api.githubcopilot.com`. No PAT needed.
+//! - **PAT exchange** (fallback): The user provides a GitHub PAT. This module
+//!   exchanges it for a short-lived Copilot API token via the internal GitHub
+//!   endpoint, caches the result on disk, and derives the provider base URL
+//!   from the token's embedded `proxy-ep` field.
 
 use anyhow::{Context as _, Result};
 use regex::Regex;
@@ -22,26 +26,63 @@ pub const DEFAULT_COPILOT_API_BASE_URL: &str = "https://api.individual.githubcop
 /// whether a cached token is still usable. Matches OpenCode's 5-minute buffer.
 const EXPIRY_SAFETY_MARGIN_MS: i64 = 5 * 60 * 1000;
 
+/// Safety margin added to the device code polling interval to avoid rate limiting.
+/// Matches OpenCode's 3-second buffer.
+const DEVICE_POLLING_SAFETY_MARGIN_MS: u64 = 3_000;
+
+// --- GitHub OAuth device flow constants (same as OpenCode) ---
+const GITHUB_OAUTH_CLIENT_ID: &str = "Ov23li8tweQw6odWQebz";
+const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
+const GITHUB_ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
+
 static PROXY_EP_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?:^|;)\s*proxy-ep=([^;\s]+)").unwrap());
+
+/// How the Copilot token was obtained.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMethod {
+    /// GitHub PAT exchanged for a Copilot API token.
+    PatExchange,
+    /// GitHub OAuth device flow — token used directly as Bearer.
+    DeviceFlow,
+}
 
 /// Cached Copilot API token stored on disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CopilotToken {
     pub token: String,
     /// SHA-256 hex digest of the GitHub PAT used to obtain this token.
+    /// Empty for device flow tokens.
     pub pat_hash: String,
     /// Expiry as Unix timestamp in milliseconds.
+    /// 0 means the token does not expire (GitHub OAuth tokens).
     pub expires_at_ms: i64,
     /// When this cache entry was last updated (Unix milliseconds).
     pub updated_at_ms: i64,
+    /// How this token was obtained.
+    #[serde(default = "default_auth_method")]
+    pub auth_method: AuthMethod,
+}
+
+fn default_auth_method() -> AuthMethod {
+    AuthMethod::PatExchange
 }
 
 impl CopilotToken {
     /// Check if the token is expired or about to expire (within 5 minutes).
+    /// Device flow tokens (expires_at_ms == 0) never expire.
     pub fn is_expired(&self) -> bool {
+        if self.expires_at_ms == 0 {
+            return false; // GitHub OAuth tokens don't expire
+        }
         let now = chrono::Utc::now().timestamp_millis();
         now >= self.expires_at_ms - EXPIRY_SAFETY_MARGIN_MS
+    }
+
+    /// Whether this token was obtained via device flow.
+    pub fn is_device_flow(&self) -> bool {
+        self.auth_method == AuthMethod::DeviceFlow
     }
 }
 
@@ -108,6 +149,7 @@ pub async fn exchange_github_token(
         pat_hash,
         expires_at_ms,
         updated_at_ms: chrono::Utc::now().timestamp_millis(),
+        auth_method: AuthMethod::PatExchange,
     })
 }
 
@@ -170,6 +212,182 @@ pub fn derive_base_url_from_token(token: &str) -> Option<String> {
     };
 
     Some(format!("https://{api_host}"))
+}
+
+// ---------------------------------------------------------------------------
+// GitHub OAuth device flow
+// ---------------------------------------------------------------------------
+
+/// Response from GitHub's device code initiation endpoint.
+#[derive(Debug, Deserialize)]
+pub struct GithubDeviceCodeResponse {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    /// Recommended polling interval in seconds.
+    pub interval: Option<u64>,
+    /// Time in seconds before the device code expires.
+    pub expires_in: Option<u64>,
+}
+
+/// Result of a single device token poll.
+#[derive(Debug)]
+pub enum GithubDevicePollResult {
+    /// User has not yet authorized — keep polling.
+    Pending,
+    /// Server asked us to slow down — increase interval by 5 seconds per RFC 8628.
+    SlowDown,
+    /// User authorized — here is the access token.
+    Approved(String),
+}
+
+/// Step 1: Request a device code from GitHub.
+pub async fn request_github_device_code() -> Result<GithubDeviceCodeResponse> {
+    let client = reqwest::Client::new();
+    let response = client
+        .post(GITHUB_DEVICE_CODE_URL)
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .header(
+            "User-Agent",
+            format!("spacebot/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .json(&serde_json::json!({
+            "client_id": GITHUB_OAUTH_CLIENT_ID,
+            "scope": "read:user"
+        }))
+        .send()
+        .await
+        .context("failed to send GitHub device code request")?;
+
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .context("failed to read GitHub device code response")?;
+
+    if !status.is_success() {
+        anyhow::bail!("GitHub device code request failed ({}): {}", status, text);
+    }
+
+    serde_json::from_str::<GithubDeviceCodeResponse>(&text)
+        .context("failed to parse GitHub device code response")
+}
+
+/// Step 2: Poll GitHub for the access token (single poll).
+pub async fn poll_github_device_token(device_code: &str) -> Result<GithubDevicePollResult> {
+    let client = reqwest::Client::new();
+    let response = client
+        .post(GITHUB_ACCESS_TOKEN_URL)
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .header(
+            "User-Agent",
+            format!("spacebot/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .json(&serde_json::json!({
+            "client_id": GITHUB_OAUTH_CLIENT_ID,
+            "device_code": device_code,
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code"
+        }))
+        .send()
+        .await
+        .context("failed to send GitHub device token poll request")?;
+
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .context("failed to read GitHub device token poll response")?;
+
+    if !status.is_success() {
+        anyhow::bail!(
+            "GitHub device token poll failed ({}): {}",
+            status,
+            body
+        );
+    }
+
+    #[derive(Deserialize)]
+    struct PollResponse {
+        access_token: Option<String>,
+        error: Option<String>,
+    }
+
+    let poll: PollResponse =
+        serde_json::from_str(&body).context("failed to parse GitHub device token response")?;
+
+    if let Some(token) = poll.access_token {
+        return Ok(GithubDevicePollResult::Approved(token));
+    }
+
+    match poll.error.as_deref() {
+        Some("authorization_pending") => Ok(GithubDevicePollResult::Pending),
+        Some("slow_down") => Ok(GithubDevicePollResult::SlowDown),
+        Some(error) => anyhow::bail!("GitHub device flow error: {}", error),
+        None => anyhow::bail!("unexpected GitHub device token response: {}", body),
+    }
+}
+
+/// Recommended polling interval with safety margin, in milliseconds.
+pub fn device_poll_interval_ms(server_interval: Option<u64>) -> u64 {
+    let base = server_interval.unwrap_or(5).max(1) * 1000;
+    base + DEVICE_POLLING_SAFETY_MARGIN_MS
+}
+
+/// Build a `CopilotToken` from a device flow access token.
+/// Device flow tokens don't expire (expires_at_ms = 0) and have no PAT hash.
+pub fn device_flow_token(access_token: String) -> CopilotToken {
+    CopilotToken {
+        token: access_token,
+        pat_hash: String::new(),
+        expires_at_ms: 0,
+        updated_at_ms: chrono::Utc::now().timestamp_millis(),
+        auth_method: AuthMethod::DeviceFlow,
+    }
+}
+
+/// Run the full device flow interactively. Prints instructions, polls until
+/// authorized, and saves the token to disk.
+pub async fn login_device_flow_interactive(instance_dir: &Path) -> Result<CopilotToken> {
+    let device = request_github_device_code().await?;
+
+    eprintln!("\nGo to: {}\n", device.verification_uri);
+    eprintln!("Enter code: {}\n", device.user_code);
+
+    if let Err(_error) = open::that(&device.verification_uri) {
+        eprintln!("(Could not open browser automatically, please copy the URL above)");
+    }
+
+    eprintln!("Waiting for authorization...");
+
+    let mut interval_ms = device_poll_interval_ms(device.interval);
+    let timeout_ms = device.expires_in.unwrap_or(900) * 1000;
+    let start = std::time::Instant::now();
+
+    loop {
+        if start.elapsed().as_millis() as u64 > timeout_ms {
+            anyhow::bail!("device code expired — please try again");
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
+
+        match poll_github_device_token(&device.device_code).await? {
+            GithubDevicePollResult::Approved(access_token) => {
+                let token = device_flow_token(access_token);
+                save_cached_token(instance_dir, &token)?;
+                eprintln!(
+                    "\n✓ GitHub Copilot authenticated via device flow.\n  Token saved to {}",
+                    credentials_path(instance_dir).display()
+                );
+                return Ok(token);
+            }
+            GithubDevicePollResult::Pending => {}
+            GithubDevicePollResult::SlowDown => {
+                interval_ms += 5_000; // RFC 8628: add 5 seconds on slow_down
+            }
+        }
+    }
 }
 
 /// Path to the cached Copilot token within the instance directory.
@@ -298,8 +516,9 @@ mod tests {
         let expired = CopilotToken {
             token: "test".to_string(),
             pat_hash: hash_pat("test_pat"),
-            expires_at_ms: 0,
+            expires_at_ms: 1,
             updated_at_ms: 0,
+            auth_method: AuthMethod::PatExchange,
         };
         assert!(expired.is_expired());
 
@@ -308,7 +527,17 @@ mod tests {
             pat_hash: hash_pat("test_pat"),
             expires_at_ms: chrono::Utc::now().timestamp_millis() + 3_600_000,
             updated_at_ms: 0,
+            auth_method: AuthMethod::PatExchange,
         };
         assert!(!future.is_expired());
+    }
+
+    #[test]
+    fn device_flow_token_never_expires() {
+        let token = device_flow_token("gho_test_token".to_string());
+        assert!(!token.is_expired());
+        assert!(token.is_device_flow());
+        assert_eq!(token.auth_method, AuthMethod::DeviceFlow);
+        assert!(token.pat_hash.is_empty());
     }
 }

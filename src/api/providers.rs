@@ -24,6 +24,9 @@ const OPENAI_DEVICE_OAUTH_MAX_POLL_INTERVAL_SECS: u64 = 30;
 static OPENAI_DEVICE_OAUTH_SESSIONS: LazyLock<RwLock<HashMap<String, DeviceOAuthSession>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
+static COPILOT_DEVICE_FLOW_SESSIONS: LazyLock<RwLock<HashMap<String, DeviceOAuthSession>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
 #[derive(Clone, Debug)]
 struct DeviceOAuthSession {
     expires_at: i64,
@@ -784,6 +787,311 @@ pub(super) async fn openai_browser_oauth_status(
             message: Some(message.clone()),
         },
         DeviceOAuthSessionStatus::Failed(message) => OpenAiOAuthBrowserStatusResponse {
+            found: true,
+            done: true,
+            success: false,
+            message: Some(message.clone()),
+        },
+    };
+    Ok(Json(response))
+}
+
+// ---------------------------------------------------------------------------
+// GitHub Copilot device flow routes
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(super) struct CopilotDeviceFlowStartRequest {
+    /// Model to configure after auth (e.g. "github-copilot/claude-sonnet-4")
+    #[serde(default)]
+    model: String,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub(super) struct CopilotDeviceFlowStartResponse {
+    success: bool,
+    message: String,
+    user_code: Option<String>,
+    verification_uri: Option<String>,
+    state: Option<String>,
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+pub(super) struct CopilotDeviceFlowStatusRequest {
+    state: String,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub(super) struct CopilotDeviceFlowStatusResponse {
+    found: bool,
+    done: bool,
+    success: bool,
+    message: Option<String>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/providers/github-copilot/device-flow/start",
+    request_body = CopilotDeviceFlowStartRequest,
+    responses(
+        (status = 200, body = CopilotDeviceFlowStartResponse),
+        (status = 400, description = "Invalid request"),
+    ),
+    tag = "providers",
+)]
+pub(super) async fn start_copilot_device_flow(
+    State(state): State<Arc<ApiState>>,
+    Json(request): Json<CopilotDeviceFlowStartRequest>,
+) -> Result<Json<CopilotDeviceFlowStartResponse>, StatusCode> {
+    prune_copilot_device_flow_sessions().await;
+
+    let device_code = match crate::github_copilot_auth::request_github_device_code().await {
+        Ok(device_code) => device_code,
+        Err(error) => {
+            return Ok(Json(CopilotDeviceFlowStartResponse {
+                success: false,
+                message: format!("Failed to start GitHub device authorization: {error}"),
+                user_code: None,
+                verification_uri: None,
+                state: None,
+            }));
+        }
+    };
+
+    let now = chrono::Utc::now().timestamp();
+    let expires_in = device_code.expires_in.unwrap_or(900);
+    let expires_at = now + expires_in as i64;
+    let poll_interval = device_code.interval.unwrap_or(5);
+    let state_key = Uuid::new_v4().to_string();
+
+    COPILOT_DEVICE_FLOW_SESSIONS.write().await.insert(
+        state_key.clone(),
+        DeviceOAuthSession {
+            expires_at,
+            status: DeviceOAuthSessionStatus::Pending,
+        },
+    );
+
+    let state_clone = state.clone();
+    let state_key_clone = state_key.clone();
+    let device_code_str = device_code.device_code.clone();
+    let model = request.model.clone();
+    tokio::spawn(async move {
+        run_copilot_device_flow_background(
+            state_clone,
+            state_key_clone,
+            device_code_str,
+            poll_interval,
+            expires_at,
+            model,
+        )
+        .await;
+    });
+
+    Ok(Json(CopilotDeviceFlowStartResponse {
+        success: true,
+        message: "GitHub Copilot device authorization started".to_string(),
+        user_code: Some(device_code.user_code),
+        verification_uri: Some(device_code.verification_uri),
+        state: Some(state_key),
+    }))
+}
+
+async fn run_copilot_device_flow_background(
+    state: Arc<ApiState>,
+    state_key: String,
+    device_code: String,
+    poll_interval: u64,
+    expires_at: i64,
+    model: String,
+) {
+    let mut interval_ms = crate::github_copilot_auth::device_poll_interval_ms(Some(poll_interval));
+
+    loop {
+        {
+            let sessions = COPILOT_DEVICE_FLOW_SESSIONS.read().await;
+            if !sessions
+                .get(&state_key)
+                .is_some_and(|s| s.status.is_pending())
+            {
+                return;
+            }
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        if now >= expires_at {
+            update_copilot_device_flow_status(
+                &state_key,
+                DeviceOAuthSessionStatus::Failed(
+                    "Sign-in expired. Please start again.".to_string(),
+                ),
+            )
+            .await;
+            return;
+        }
+
+        sleep(Duration::from_millis(interval_ms)).await;
+
+        let result = crate::github_copilot_auth::poll_github_device_token(&device_code).await;
+        match result {
+            Ok(crate::github_copilot_auth::GithubDevicePollResult::Pending) => continue,
+            Ok(crate::github_copilot_auth::GithubDevicePollResult::SlowDown) => {
+                interval_ms += 5_000;
+                continue;
+            }
+            Ok(crate::github_copilot_auth::GithubDevicePollResult::Approved(access_token)) => {
+                let token = crate::github_copilot_auth::device_flow_token(access_token);
+
+                // Save to disk
+                let instance_dir = (**state.instance_dir.load()).clone();
+                if let Err(error) =
+                    crate::github_copilot_auth::save_cached_token(&instance_dir, &token)
+                {
+                    let message =
+                        format!("GitHub Copilot auth succeeded but failed to save token: {error}");
+                    tracing::warn!(%message);
+                    update_copilot_device_flow_status(
+                        &state_key,
+                        DeviceOAuthSessionStatus::Failed(message),
+                    )
+                    .await;
+                    return;
+                }
+
+                // Update in-memory cache
+                if let Some(llm_manager) = state.llm_manager.read().await.as_ref() {
+                    llm_manager.set_copilot_token(token).await;
+                }
+
+                // Optionally apply model routing
+                if !model.is_empty() {
+                    if let Err(error) =
+                        apply_copilot_routing(&state, &model).await
+                    {
+                        tracing::warn!(%error, "failed to apply Copilot routing");
+                    }
+                }
+
+                state
+                    .provider_setup_tx
+                    .try_send(crate::ProviderSetupEvent::ProvidersConfigured)
+                    .ok();
+
+                update_copilot_device_flow_status(
+                    &state_key,
+                    DeviceOAuthSessionStatus::Completed(
+                        "GitHub Copilot authenticated via device flow.".to_string(),
+                    ),
+                )
+                .await;
+                return;
+            }
+            Err(error) => {
+                let message = format!("GitHub Copilot device flow failed: {error}");
+                tracing::warn!(%message);
+                update_copilot_device_flow_status(
+                    &state_key,
+                    DeviceOAuthSessionStatus::Failed(message),
+                )
+                .await;
+                return;
+            }
+        }
+    }
+}
+
+async fn apply_copilot_routing(state: &Arc<ApiState>, model: &str) -> anyhow::Result<()> {
+    let config_path = state.config_path.read().await.clone();
+    let content = if config_path.exists() {
+        tokio::fs::read_to_string(&config_path)
+            .await
+            .context("failed to read config.toml")?
+    } else {
+        String::new()
+    };
+
+    let mut doc: toml_edit::DocumentMut = content.parse().context("failed to parse config.toml")?;
+    apply_model_routing(&mut doc, model);
+    tokio::fs::write(&config_path, doc.to_string())
+        .await
+        .context("failed to write config.toml")?;
+
+    refresh_defaults_config(state).await;
+    Ok(())
+}
+
+async fn prune_copilot_device_flow_sessions() {
+    let cutoff = chrono::Utc::now().timestamp() - OPENAI_DEVICE_OAUTH_SESSION_TTL_SECS;
+    let mut sessions = COPILOT_DEVICE_FLOW_SESSIONS.write().await;
+    sessions.retain(|_, session| session.expires_at >= cutoff);
+}
+
+async fn update_copilot_device_flow_status(state_key: &str, status: DeviceOAuthSessionStatus) {
+    if let Some(session) = COPILOT_DEVICE_FLOW_SESSIONS
+        .write()
+        .await
+        .get_mut(state_key)
+    {
+        session.status = status;
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/providers/github-copilot/device-flow/status",
+    params(
+        ("state" = String, Query, description = "Device flow state parameter"),
+    ),
+    responses(
+        (status = 200, body = CopilotDeviceFlowStatusResponse),
+        (status = 400, description = "Invalid request"),
+    ),
+    tag = "providers",
+)]
+pub(super) async fn copilot_device_flow_status(
+    Query(request): Query<CopilotDeviceFlowStatusRequest>,
+) -> Result<Json<CopilotDeviceFlowStatusResponse>, StatusCode> {
+    prune_copilot_device_flow_sessions().await;
+    if request.state.trim().is_empty() {
+        return Ok(Json(CopilotDeviceFlowStatusResponse {
+            found: false,
+            done: false,
+            success: false,
+            message: Some("Missing state parameter".to_string()),
+        }));
+    }
+
+    let state_key = request.state.trim();
+    let now = chrono::Utc::now().timestamp();
+    let mut sessions = COPILOT_DEVICE_FLOW_SESSIONS.write().await;
+    let Some(session) = sessions.get_mut(state_key) else {
+        return Ok(Json(CopilotDeviceFlowStatusResponse {
+            found: false,
+            done: false,
+            success: false,
+            message: None,
+        }));
+    };
+
+    if session.status.is_pending() && session.is_expired(now) {
+        session.status =
+            DeviceOAuthSessionStatus::Failed("Sign-in expired. Please start again.".to_string());
+    }
+
+    let response = match &session.status {
+        DeviceOAuthSessionStatus::Pending => CopilotDeviceFlowStatusResponse {
+            found: true,
+            done: false,
+            success: false,
+            message: None,
+        },
+        DeviceOAuthSessionStatus::Completed(message) => CopilotDeviceFlowStatusResponse {
+            found: true,
+            done: true,
+            success: true,
+            message: Some(message.clone()),
+        },
+        DeviceOAuthSessionStatus::Failed(message) => CopilotDeviceFlowStatusResponse {
             found: true,
             done: true,
             success: false,
