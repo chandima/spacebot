@@ -362,6 +362,8 @@ pub(super) async fn get_providers(
     let instance_dir = (**state.instance_dir.load()).clone();
     let secrets_store = state.secrets_store.load();
     let openai_oauth_configured = crate::openai_auth::credentials_path(&instance_dir).exists();
+    let copilot_device_flow_configured =
+        crate::github_copilot_auth::credentials_path(&instance_dir).exists();
     let env_set = |name: &str| {
         std::env::var(name)
             .ok()
@@ -457,7 +459,8 @@ pub(super) async fn get_providers(
             has_value("minimax_cn_key", "MINIMAX_CN_API_KEY"),
             has_value("moonshot_key", "MOONSHOT_API_KEY"),
             has_value("zai_coding_plan_key", "ZAI_CODING_PLAN_API_KEY"),
-            has_value("github_copilot_key", "GITHUB_COPILOT_API_KEY"),
+            has_value("github_copilot_key", "GITHUB_COPILOT_API_KEY")
+                || copilot_device_flow_configured,
         )
     } else {
         (
@@ -482,7 +485,7 @@ pub(super) async fn get_providers(
             env_set("MINIMAX_CN_API_KEY"),
             env_set("MOONSHOT_API_KEY"),
             env_set("ZAI_CODING_PLAN_API_KEY"),
-            env_set("GITHUB_COPILOT_API_KEY"),
+            env_set("GITHUB_COPILOT_API_KEY") || copilot_device_flow_configured,
         )
     };
 

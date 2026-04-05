@@ -392,10 +392,20 @@ impl LlmManager {
             .await?
             .ok_or_else(|| LlmError::UnknownProvider("github-copilot".to_string()))?;
 
-        let base_url = crate::github_copilot_auth::derive_base_url_from_token(&token)
-            .unwrap_or_else(|| {
+        // Device flow tokens use the public Copilot API endpoint directly.
+        // PAT-exchanged tokens contain a proxy-ep field with a specific endpoint.
+        let is_device_flow = {
+            let guard = self.copilot_token.read().await;
+            guard.as_ref().is_some_and(|t| t.is_device_flow())
+        };
+
+        let base_url = if is_device_flow {
+            "https://api.githubcopilot.com".to_string()
+        } else {
+            crate::github_copilot_auth::derive_base_url_from_token(&token).unwrap_or_else(|| {
                 crate::github_copilot_auth::DEFAULT_COPILOT_API_BASE_URL.to_string()
-            });
+            })
+        };
 
         Ok(ProviderConfig {
             api_type: ApiType::OpenAiChatCompletions,
