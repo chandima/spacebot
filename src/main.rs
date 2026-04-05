@@ -70,6 +70,9 @@ enum AuthCommand {
         /// Use device code flow instead of browser for OpenAI
         #[arg(long)]
         device_code: bool,
+        /// Import OpenAI tokens from Codex CLI (~/.codex/auth.json)
+        #[arg(long)]
+        from_codex: bool,
     },
     /// Show current auth status
     Status,
@@ -574,13 +577,22 @@ fn cmd_auth(config_path: Option<std::path::PathBuf>, auth_cmd: AuthCommand) -> a
                 copilot,
                 openai,
                 device_code,
+                from_codex,
             } => {
                 if copilot {
                     // GitHub Copilot device flow
                     spacebot::github_copilot_auth::login_device_flow_interactive(&instance_dir)
                         .await?;
                 } else if openai {
-                    if device_code {
+                    if from_codex {
+                        // Import from Codex CLI / OpenCode
+                        eprintln!("Importing OpenAI credentials from Codex CLI...");
+                        spacebot::openai_auth::import_from_codex(&instance_dir).await?;
+                        eprintln!(
+                            "\n✓ OpenAI ChatGPT credentials imported from Codex CLI.\n  Saved to {}",
+                            spacebot::openai_auth::credentials_path(&instance_dir).display()
+                        );
+                    } else if device_code {
                         // OpenAI device code flow (headless / fallback)
                         let device = spacebot::openai_auth::request_device_code().await?;
                         let verification_url =

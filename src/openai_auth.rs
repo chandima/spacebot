@@ -641,3 +641,106 @@ pub fn save_credentials(instance_dir: &Path, creds: &OAuthCredentials) -> Result
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Import from Codex CLI
+// ---------------------------------------------------------------------------
+
+/// Codex CLI auth.json schema (subset we care about).
+#[derive(Deserialize)]
+struct CodexAuth {
+    tokens: Option<CodexTokens>,
+}
+
+#[derive(Deserialize)]
+struct CodexTokens {
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    account_id: Option<String>,
+}
+
+/// Default Codex CLI auth file location.
+fn codex_auth_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".codex")
+        .join("auth.json")
+}
+
+/// Extract `exp` (seconds since epoch) from a JWT without verifying signature.
+fn jwt_exp(token: &str) -> Option<i64> {
+    let payload = token.split('.').nth(1)?;
+    let padded = match payload.len() % 4 {
+        2 => format!("{payload}=="),
+        3 => format!("{payload}="),
+        _ => payload.to_string(),
+    };
+    let bytes = URL_SAFE_NO_PAD
+        .decode(padded.trim_end_matches('='))
+        .ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    value.get("exp")?.as_i64()
+}
+
+/// Import OpenAI OAuth credentials from the Codex CLI (`~/.codex/auth.json`).
+///
+/// If the access token is expired, it is automatically refreshed using the
+/// refresh token before saving.
+pub async fn import_from_codex(instance_dir: &Path) -> Result<()> {
+    let codex_path = codex_auth_path();
+    if !codex_path.exists() {
+        anyhow::bail!(
+            "Codex CLI auth file not found at {}\n  \
+             Run `codex` or OpenCode first to authenticate with OpenAI.",
+            codex_path.display()
+        );
+    }
+
+    let data = std::fs::read_to_string(&codex_path)
+        .with_context(|| format!("failed to read {}", codex_path.display()))?;
+    let codex: CodexAuth =
+        serde_json::from_str(&data).context("failed to parse Codex CLI auth.json")?;
+
+    let tokens = codex
+        .tokens
+        .as_ref()
+        .context("Codex CLI auth.json has no tokens — have you authenticated in Codex/OpenCode?")?;
+
+    let access_token = tokens
+        .access_token
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .context("Codex CLI auth.json has no access_token")?;
+
+    let refresh_token = tokens
+        .refresh_token
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .context("Codex CLI auth.json has no refresh_token")?;
+
+    let account_id = tokens.account_id.clone();
+
+    // Determine expiry from the JWT `exp` claim.
+    let exp_secs = jwt_exp(access_token).unwrap_or(0);
+    let expires_at_ms = exp_secs * 1000;
+
+    let mut creds = OAuthCredentials {
+        access_token: access_token.to_string(),
+        refresh_token: refresh_token.to_string(),
+        expires_at: expires_at_ms,
+        account_id,
+    };
+
+    // If the token is expired (or about to expire), refresh it now.
+    if creds.is_expired() {
+        eprintln!("  Access token expired — refreshing...");
+        creds = creds.refresh().await.context(
+            "failed to refresh the imported token — \
+             re-authenticate in Codex/OpenCode and try again",
+        )?;
+        eprintln!("  ✓ Token refreshed.");
+    }
+
+    save_credentials(instance_dir, &creds)?;
+    Ok(())
+}
