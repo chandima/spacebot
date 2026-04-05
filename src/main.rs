@@ -64,9 +64,12 @@ enum AuthCommand {
         /// Authenticate with GitHub Copilot via device flow
         #[arg(long)]
         copilot: bool,
-        /// Authenticate with OpenAI ChatGPT via device code flow
+        /// Authenticate with OpenAI ChatGPT via browser (default) or device code
         #[arg(long)]
         openai: bool,
+        /// Use device code flow instead of browser for OpenAI
+        #[arg(long)]
+        device_code: bool,
     },
     /// Show current auth status
     Status,
@@ -570,62 +573,71 @@ fn cmd_auth(config_path: Option<std::path::PathBuf>, auth_cmd: AuthCommand) -> a
                 console,
                 copilot,
                 openai,
+                device_code,
             } => {
                 if copilot {
                     // GitHub Copilot device flow
                     spacebot::github_copilot_auth::login_device_flow_interactive(&instance_dir)
                         .await?;
                 } else if openai {
-                    // OpenAI ChatGPT device code flow
-                    let device = spacebot::openai_auth::request_device_code().await?;
-                    let verification_url =
-                        spacebot::openai_auth::device_verification_url(&device);
-                    eprintln!("\nGo to: {verification_url}\n");
-                    eprintln!("Enter code: {}\n", device.user_code);
-                    if let Err(_error) = open::that(&verification_url) {
-                        eprintln!(
-                            "(Could not open browser automatically, please copy the URL above)"
-                        );
-                    }
-                    eprintln!("Waiting for authorization...");
-
-                    let interval = device.interval.unwrap_or(5).max(1);
-                    let timeout_secs = device.expires_in.unwrap_or(900);
-                    let start = std::time::Instant::now();
-                    let mut poll_interval_ms = interval * 1000 + 3_000;
-
-                    loop {
-                        if start.elapsed().as_secs() > timeout_secs {
-                            anyhow::bail!("device code expired — please try again");
+                    if device_code {
+                        // OpenAI device code flow (headless / fallback)
+                        let device = spacebot::openai_auth::request_device_code().await?;
+                        let verification_url =
+                            spacebot::openai_auth::device_verification_url(&device);
+                        eprintln!("\nGo to: {verification_url}\n");
+                        eprintln!("Enter code: {}\n", device.user_code);
+                        if let Err(_error) = open::that(&verification_url) {
+                            eprintln!(
+                                "(Could not open browser automatically, please copy the URL above)"
+                            );
                         }
-                        tokio::time::sleep(std::time::Duration::from_millis(poll_interval_ms))
-                            .await;
+                        eprintln!("Waiting for authorization...");
 
-                        match spacebot::openai_auth::poll_device_token(
-                            &device.device_auth_id,
-                            &device.user_code,
-                        )
-                        .await?
-                        {
-                            spacebot::openai_auth::DeviceTokenPollResult::Approved(grant) => {
-                                let creds = spacebot::openai_auth::exchange_device_code(
-                                    &grant.authorization_code,
-                                    &grant.code_verifier,
-                                )
-                                .await?;
-                                spacebot::openai_auth::save_credentials(&instance_dir, &creds)?;
-                                eprintln!(
-                                    "\n✓ OpenAI ChatGPT authenticated.\n  Credentials saved to {}",
-                                    spacebot::openai_auth::credentials_path(&instance_dir)
-                                        .display()
-                                );
-                                break;
+                        let interval = device.interval.unwrap_or(5).max(1);
+                        let timeout_secs = device.expires_in.unwrap_or(900);
+                        let start = std::time::Instant::now();
+                        let mut poll_interval_ms = interval * 1000 + 3_000;
+
+                        loop {
+                            if start.elapsed().as_secs() > timeout_secs {
+                                anyhow::bail!("device code expired — please try again");
                             }
-                            spacebot::openai_auth::DeviceTokenPollResult::Pending => {}
-                            spacebot::openai_auth::DeviceTokenPollResult::SlowDown => {
-                                poll_interval_ms += 5_000;
+                            tokio::time::sleep(std::time::Duration::from_millis(poll_interval_ms))
+                                .await;
+
+                            match spacebot::openai_auth::poll_device_token(
+                                &device.device_auth_id,
+                                &device.user_code,
+                            )
+                            .await?
+                            {
+                                spacebot::openai_auth::DeviceTokenPollResult::Approved(grant) => {
+                                    let creds = spacebot::openai_auth::exchange_device_code(
+                                        &grant.authorization_code,
+                                        &grant.code_verifier,
+                                    )
+                                    .await?;
+                                    spacebot::openai_auth::save_credentials(
+                                        &instance_dir,
+                                        &creds,
+                                    )?;
+                                    eprintln!(
+                                        "\n✓ OpenAI ChatGPT authenticated.\n  Credentials saved to {}",
+                                        spacebot::openai_auth::credentials_path(&instance_dir)
+                                            .display()
+                                    );
+                                    break;
+                                }
+                                spacebot::openai_auth::DeviceTokenPollResult::Pending => {}
+                                spacebot::openai_auth::DeviceTokenPollResult::SlowDown => {
+                                    poll_interval_ms += 5_000;
+                                }
                             }
                         }
+                    } else {
+                        // Browser PKCE flow (default — works with SSO)
+                        spacebot::openai_auth::login_browser_interactive(&instance_dir).await?;
                     }
                 } else {
                     // Anthropic OAuth (default)

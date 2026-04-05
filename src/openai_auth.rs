@@ -1,9 +1,11 @@
-//! OpenAI ChatGPT Plus OAuth device code flow, token exchange, refresh, and storage.
+//! OpenAI ChatGPT Plus OAuth: device code flow, browser PKCE flow, token exchange, refresh, and storage.
 
 use anyhow::{Context as _, Result};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use std::path::{Path, PathBuf};
 
@@ -13,6 +15,11 @@ const DEVICE_USERCODE_URL: &str = "https://auth.openai.com/api/accounts/deviceau
 const DEVICE_TOKEN_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/token";
 const DEVICE_REDIRECT_URI: &str = "https://auth.openai.com/deviceauth/callback";
 const DEFAULT_DEVICE_VERIFICATION_URL: &str = "https://auth.openai.com/codex/device";
+
+const BROWSER_OAUTH_PORT: u16 = 1455;
+const BROWSER_REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
+const BROWSER_OAUTH_AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
+const BROWSER_OAUTH_SCOPES: &str = "openid profile email offline_access";
 
 /// Stored OpenAI OAuth credentials.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -361,6 +368,241 @@ pub async fn exchange_device_code(
             + token_response.expires_in.unwrap_or(3600) * 1000,
         account_id,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Browser PKCE flow (works with SSO / enterprise logins)
+// ---------------------------------------------------------------------------
+
+/// PKCE verifier and challenge pair.
+struct Pkce {
+    verifier: String,
+    challenge: String,
+}
+
+/// Generate a PKCE code verifier (43 chars) and S256 challenge.
+fn generate_pkce() -> Pkce {
+    // 32 random bytes → 43-char base64url string
+    let mut bytes = [0u8; 32];
+    rand::rng().fill_bytes(&mut bytes);
+    let verifier = URL_SAFE_NO_PAD.encode(bytes);
+
+    let hash = Sha256::digest(verifier.as_bytes());
+    let challenge = URL_SAFE_NO_PAD.encode(hash);
+
+    Pkce {
+        verifier,
+        challenge,
+    }
+}
+
+/// Generate a random CSRF state token.
+fn generate_state() -> String {
+    let mut bytes = [0u8; 32];
+    rand::rng().fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// Build the browser authorization URL with PKCE parameters.
+fn browser_authorize_url(pkce: &Pkce, state: &str) -> String {
+    format!(
+        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}&id_token_add_organizations=true&codex_cli_simplified_flow=true&originator=spacebot",
+        BROWSER_OAUTH_AUTHORIZE_URL,
+        CLIENT_ID,
+        urlencoding::encode(BROWSER_REDIRECT_URI),
+        urlencoding::encode(BROWSER_OAUTH_SCOPES),
+        pkce.challenge,
+        state,
+    )
+}
+
+/// Exchange a browser authorization code for OAuth tokens (PKCE flow).
+async fn exchange_browser_code(code: &str, code_verifier: &str) -> Result<OAuthCredentials> {
+    let client = reqwest::Client::new();
+    let response = client
+        .post(OAUTH_TOKEN_URL)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", BROWSER_REDIRECT_URI),
+            ("client_id", CLIENT_ID),
+            ("code_verifier", code_verifier),
+        ])
+        .send()
+        .await
+        .context("failed to send OpenAI browser PKCE token exchange request")?;
+
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .context("failed to read OpenAI browser PKCE token exchange response")?;
+
+    if !status.is_success() {
+        anyhow::bail!(
+            "OpenAI browser PKCE token exchange failed ({}): {}",
+            status,
+            body
+        );
+    }
+
+    let token_response: TokenResponse = serde_json::from_str(&body)
+        .context("failed to parse OpenAI browser PKCE token exchange response")?;
+    let account_id = extract_account_id(&token_response);
+    let refresh_token = token_response
+        .refresh_token
+        .context("OpenAI browser PKCE response did not include refresh_token")?;
+
+    Ok(OAuthCredentials {
+        access_token: token_response.access_token,
+        refresh_token,
+        expires_at: chrono::Utc::now().timestamp_millis()
+            + token_response.expires_in.unwrap_or(3600) * 1000,
+        account_id,
+    })
+}
+
+/// Run the interactive browser PKCE login flow.
+///
+/// 1. Generates PKCE verifier/challenge and CSRF state
+/// 2. Starts a temporary HTTP server on localhost:1455
+/// 3. Opens the browser to OpenAI's authorization page
+/// 4. Waits for the callback with the authorization code
+/// 5. Exchanges the code for tokens
+/// 6. Saves credentials to disk
+pub async fn login_browser_interactive(instance_dir: &Path) -> Result<OAuthCredentials> {
+    let pkce = generate_pkce();
+    let state = generate_state();
+    let authorize_url = browser_authorize_url(&pkce, &state);
+
+    // Channel to receive the authorization code from the callback handler
+    let (code_tx, mut code_rx) = tokio::sync::mpsc::channel::<Result<String>>(1);
+
+    let expected_state = state.clone();
+    let callback_handler = {
+        let code_tx = code_tx.clone();
+        move |uri: axum::http::Uri| {
+            let code_tx = code_tx.clone();
+            let expected_state = expected_state.clone();
+            async move {
+                let query = uri.query().unwrap_or("");
+                let params: std::collections::HashMap<String, String> =
+                    url::form_urlencoded::parse(query.as_bytes())
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect();
+
+                if let Some(error) = params.get("error") {
+                    let description = params
+                        .get("error_description")
+                        .map(|d| d.as_str())
+                        .unwrap_or("unknown error");
+                    code_tx
+                        .send(Err(anyhow::anyhow!("OAuth error: {} — {}", error, description)))
+                        .await
+                        .ok();
+                    return axum::response::Html(
+                        "<html><body><h2>Authentication failed</h2><p>You can close this tab.</p></body></html>"
+                            .to_string(),
+                    );
+                }
+
+                let received_state = params.get("state").map(|s| s.as_str()).unwrap_or("");
+                if received_state != expected_state {
+                    code_tx
+                        .send(Err(anyhow::anyhow!("invalid state — potential CSRF")))
+                        .await
+                        .ok();
+                    return axum::response::Html(
+                        "<html><body><h2>Invalid state</h2><p>You can close this tab.</p></body></html>"
+                            .to_string(),
+                    );
+                }
+
+                if let Some(code) = params.get("code") {
+                    code_tx.send(Ok(code.clone())).await.ok();
+                    axum::response::Html(
+                        "<html><body><h2>✓ Authenticated!</h2><p>You can close this tab and return to your terminal.</p><script>setTimeout(()=>window.close(),2000)</script></body></html>"
+                            .to_string(),
+                    )
+                } else {
+                    code_tx
+                        .send(Err(anyhow::anyhow!("missing authorization code")))
+                        .await
+                        .ok();
+                    axum::response::Html(
+                        "<html><body><h2>Missing code</h2><p>You can close this tab.</p></body></html>"
+                            .to_string(),
+                    )
+                }
+            }
+        }
+    };
+
+    let app = axum::Router::new().route(
+        "/auth/callback",
+        axum::routing::get(callback_handler),
+    );
+
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{BROWSER_OAUTH_PORT}"))
+        .await
+        .with_context(|| {
+            format!("failed to bind to localhost:{BROWSER_OAUTH_PORT} — is another process using it?")
+        })?;
+
+    eprintln!("\nOpening browser for OpenAI authentication...\n");
+    eprintln!("If the browser doesn't open, visit:\n  {authorize_url}\n");
+
+    if let Err(_error) = open::that(&authorize_url) {
+        eprintln!("(Could not open browser automatically)");
+    }
+
+    eprintln!("Waiting for authorization (timeout: 5 minutes)...");
+
+    // Run server with a 5-minute timeout
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .ok();
+    });
+
+    let code = tokio::select! {
+        result = code_rx.recv() => {
+            match result {
+                Some(Ok(code)) => code,
+                Some(Err(error)) => {
+                    server_handle.abort();
+                    return Err(error);
+                }
+                None => {
+                    server_handle.abort();
+                    anyhow::bail!("callback channel closed unexpectedly");
+                }
+            }
+        }
+        _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {
+            server_handle.abort();
+            anyhow::bail!("authorization timed out after 5 minutes");
+        }
+    };
+
+    // Shut down the callback server
+    server_handle.abort();
+
+    eprintln!("Exchanging authorization code for tokens...");
+
+    let creds = exchange_browser_code(&code, &pkce.verifier)
+        .await
+        .context("failed to exchange browser authorization code")?;
+
+    save_credentials(instance_dir, &creds)?;
+
+    eprintln!(
+        "\n✓ OpenAI ChatGPT authenticated via browser.\n  Credentials saved to {}",
+        credentials_path(instance_dir).display()
+    );
+
+    Ok(creds)
 }
 
 /// Path to OpenAI OAuth credentials within the instance directory.
