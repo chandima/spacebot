@@ -570,7 +570,11 @@ export function Settings() {
 	const isConfigured = (providerId: string): boolean => {
 		if (!data) return false;
 		const statusKey = providerId.replace(/-/g, "_") as keyof typeof data.providers;
-		return data.providers[statusKey] ?? false;
+		const builtinStatus = data.providers[statusKey];
+		if (typeof builtinStatus === "boolean") return builtinStatus;
+		// Check custom providers
+		if (data.providers.custom && providerId in data.providers.custom) return true;
+		return false;
 	};
 
 	const sectionLabel = SECTIONS.find((s) => s.id === activeSection)?.label;
@@ -673,6 +677,27 @@ export function Settings() {
 												/>
 											) : null,
 										]
+									))}
+									{/* Custom providers from config.toml */}
+									{data?.providers?.custom && Object.entries(data.providers.custom).map(([id, info]) => (
+										<ProviderCard
+											key={id}
+											provider={id}
+											name={(info as { name: string; base_url: string }).name}
+											description={(info as { name: string; base_url: string }).base_url}
+											configured={true}
+											defaultModel={`${id}/`}
+											onEdit={() => {
+												setEditingProvider(id);
+												setKeyInput("");
+												setModelInput(`${id}/`);
+												setTestedSignature(null);
+												setTestResult(null);
+												setMessage(null);
+											}}
+											onRemove={() => removeMutation.mutate(id)}
+											removing={removeMutation.isPending}
+										/>
 									))}
 								</div>
 							)}
