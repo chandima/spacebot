@@ -1,0 +1,350 @@
+# LiteLLM Custom Provider
+[llm.provider.litellm]
+api_type = "openai_completions"
+base_url = "https://litellm.sandbox.iamzone.dev"
+api_key = "${LITELLM_API_KEY}"
+name = "LiteLLM Gateway"
+
+# Model routing configuration
+# Available models (NO Claude/Sonnet models available):
+# - gpt-5.4 (premium, best quality)
+# - gpt-5.3-codex (specialized for coding)
+# - kimi-k2.5 (strong general purpose)
+# - gpt-5-mini (fast, budget-friendly)
+# - gpt-5-nano (ultra-fast, smallest)
+# - glm-4.7-flash (fast Chinese model)
+# - qwen3-coder-480b (massive coding model)
+# - nova-premier, nova-pro, nova-lite (AWS Bedrock)
+
+# Timezone for cron jobs (under defaults section is correct)
+
+[defaults]
+cron_timezone = "America/Phoenix"
+worker_log_mode = "all_separate"
+
+[defaults.routing]
+channel = "github-copilot/claude-opus-4.6"    # Orchestrator: strongest reasoning
+worker = "github-copilot/gpt-5-mini"          # Background tasks: fast/cheap via Codex
+branch = "github-copilot/gpt-5-mini"          # Parallel tasks: fast/cheap via Codex
+compactor = "openai-chatgpt/gpt-5.1-codex-mini"     # Context compression: ultra-fast 1M ctx
+cortex = "openai-chatgpt/gpt-5.1-codex-mini"        # System observer: ultra-fast
+
+# Task-specific overrides for optimal routing
+[defaults.routing.task_overrides]
+coding = "openai-chatgpt/gpt-5.3-codex"       # Use Codex for coding tasks
+
+# Fallback chain across providers
+[defaults.routing.fallbacks]
+"github-copilot/claude-opus-4.6" = ["github-copilot/claude-sonnet-4.5", "openai-chatgpt/gpt-5.4"]
+"openai-chatgpt/gpt-5.3-codex" = ["github-copilot/gpt-5.3-codex", "github-copilot/gpt-5-mini"]
+"openai-chatgpt/gpt-5.1-codex-mini" = ["openai-chatgpt/gpt-5.1-codex-mini", "openai-chatgpt/gpt-5.4-mini"]
+
+# OpenCode integration for code editing
+[defaults.opencode]
+enabled = true
+path = "/opt/homebrew/bin/opencode"
+
+# Sandbox environment passthrough
+[defaults.sandbox]
+mode = "disabled"
+passthrough_env = ["GH_TOKEN", "GITHUB_TOKEN"]
+
+# Slack Messaging Configuration
+[messaging.slack]
+enabled = true
+bot_token = "${SLACK_BOT_TOKEN}"
+app_token = "${SLACK_APP_TOKEN}"
+dm_allowed_users = ["U0AP6GNB91V"]
+
+# MCP Servers
+[[defaults.mcp]]
+name = "searxng"
+transport = "stdio"
+enabled = true
+command = "/Users/chandima/.volta/bin/mcp-searxng"
+args = []
+
+[defaults.mcp.env]
+SEARXNG_URL = "https://searxng.sandbox.iamzone.dev"
+
+[[defaults.mcp]]
+name = "microsoft"
+transport = "stdio"
+enabled = true
+command = "/opt/homebrew/bin/npx"
+args = ["-y", "@softeria/ms-365-mcp-server", "--preset", "calendar,mail,contacts,files"]
+
+[defaults.mcp.env]
+MS365_MCP_CLIENT_ID = "4b3175cd-bab2-48fa-9b1d-51724e3732e5"
+MS365_MCP_TOKEN_CACHE_PATH = "/Users/chandima/.spacebot/ms365/token-cache.json"
+MS365_MCP_SELECTED_ACCOUNT_PATH = "/Users/chandima/.spacebot/ms365/selected-account.json"
+PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+
+# Browser configuration
+[defaults.browser]
+persist_session = true
+
+# Default agent configuration
+[[agents]]
+id = "default-agent"
+name = "Spacebot"
+[[agents.mcp]]
+name = "enterprise-slack"
+transport = "stdio"
+enabled = false
+command = "/bin/true"
+
+# Slack Integration Agent — Enterprise Slack read-only access
+[[agents]]
+id = "slack-agent"
+display_name = "Slack"
+role = "Enterprise Slack search, conversation history, user lookup, and channel monitoring"
+max_concurrent_workers = 2
+max_turns = 10
+
+[agents.routing]
+channel = "github-copilot/gpt-5-mini"
+worker = "github-copilot/gpt-5-mini"
+branch = "github-copilot/gpt-5-mini"
+compactor = "openai-chatgpt/gpt-5.1-codex-mini"
+cortex = "openai-chatgpt/gpt-5.1-codex-mini"
+
+# Architect agent — problem framing, scope review, architecture lock
+[[agents]]
+id = "architect-agent"
+display_name = "Architect"
+role = "Problem framing, scope review, architecture lock, and design document production"
+max_concurrent_workers = 3
+max_turns = 15
+[[agents.mcp]]
+name = "enterprise-slack"
+transport = "stdio"
+enabled = false
+command = "/bin/true"
+[[agents.mcp]]
+name = "microsoft"
+transport = "stdio"
+enabled = false
+command = "/bin/true"
+[[agents.mcp]]
+name = "chrome-devtools"
+transport = "stdio"
+enabled = true
+command = "/opt/homebrew/bin/npx"
+args = ["-y", "chrome-devtools-mcp@latest", "--headless"]
+
+[agents.routing]
+channel = "github-copilot/claude-opus-4.6"
+worker = "github-copilot/claude-opus-4.6"
+branch = "github-copilot/gpt-5-mini"
+compactor = "openai-chatgpt/gpt-5.1-codex-mini"
+cortex = "openai-chatgpt/gpt-5.1-codex-mini"
+
+# Coder agent — TDD implementation specialist
+[[agents]]
+id = "coder-agent"
+display_name = "Coder"
+role = "Test-driven implementation specialist using OpenCode workers"
+max_concurrent_workers = 3
+max_turns = 15
+[[agents.mcp]]
+name = "enterprise-slack"
+transport = "stdio"
+enabled = false
+command = "/bin/true"
+[[agents.mcp]]
+name = "microsoft"
+transport = "stdio"
+enabled = false
+command = "/bin/true"
+[[agents.mcp]]
+name = "chrome-devtools"
+transport = "stdio"
+enabled = true
+command = "/opt/homebrew/bin/npx"
+args = ["-y", "chrome-devtools-mcp@latest", "--headless"]
+
+[agents.routing]
+channel = "github-copilot/claude-sonnet-4.5"
+worker = "github-copilot/claude-sonnet-4.5"
+branch = "github-copilot/gpt-5-mini"
+compactor = "openai-chatgpt/gpt-5.1-codex-mini"
+cortex = "openai-chatgpt/gpt-5.1-codex-mini"
+
+[agents.routing.task_overrides]
+coding = "litellm/gpt-5.4"
+
+# Reviewer agent — adversarial review + QA verification
+[[agents]]
+id = "reviewer-agent"
+display_name = "Reviewer"
+role = "Three-phase adversarial code reviewer and QA specialist"
+max_concurrent_workers = 3
+max_turns = 8
+[[agents.mcp]]
+name = "enterprise-slack"
+transport = "stdio"
+enabled = false
+command = "/bin/true"
+[[agents.mcp]]
+name = "microsoft"
+transport = "stdio"
+enabled = false
+command = "/bin/true"
+[[agents.mcp]]
+name = "chrome-devtools"
+transport = "stdio"
+enabled = true
+command = "/opt/homebrew/bin/npx"
+args = ["-y", "chrome-devtools-mcp@latest", "--headless"]
+
+[agents.routing]
+channel = "litellm/glm-5"
+worker = "litellm/glm-5"
+branch = "github-copilot/gpt-5-mini"
+compactor = "openai-chatgpt/gpt-5.1-codex-mini"
+cortex = "openai-chatgpt/gpt-5.1-codex-mini"
+
+[[agents]]
+id = "notebooklm-agent"
+display_name = "NotebookLM"
+role = "Research, knowledge management, and content generation via Google NotebookLM"
+max_concurrent_workers = 2
+max_turns = 15
+
+[[agents.mcp]]
+name = "enterprise-slack"
+transport = "stdio"
+enabled = false
+command = "/bin/true"
+[[agents.mcp]]
+name = "microsoft"
+transport = "stdio"
+enabled = false
+command = "/bin/true"
+
+[[agents.mcp]]
+name = "notebooklm"
+transport = "stdio"
+enabled = true
+command = "/Users/chandima/.local/bin/uvx"
+args = ["--from", "notebooklm-mcp-cli", "notebooklm-mcp"]
+init_timeout_secs = 300
+
+[agents.routing]
+channel = "github-copilot/gpt-5-mini"
+worker = "github-copilot/gpt-5-mini"
+branch = "github-copilot/gpt-5-mini"
+compactor = "openai-chatgpt/gpt-5.1-codex-mini"
+cortex = "openai-chatgpt/gpt-5.1-codex-mini"
+
+# Google & YouTube specialist agent
+[[agents]]
+id = "google-agent"
+display_name = "Google"
+role = "Google Workspace and YouTube specialist — Drive, Docs, Slides, Sheets, Gmail, Calendar, YouTube search, subscriptions, and transcript extraction"
+max_concurrent_workers = 3
+max_turns = 15
+
+# Disable inherited MCP servers not needed (searxng stays enabled for web enrichment)
+[[agents.mcp]]
+name = "enterprise-slack"
+transport = "stdio"
+enabled = false
+command = "/bin/true"
+[[agents.mcp]]
+name = "microsoft"
+transport = "stdio"
+enabled = false
+command = "/bin/true"
+
+# Google Workspace MCP (taylorwilsdon/google_workspace_mcp)
+[[agents.mcp]]
+name = "google-workspace"
+transport = "stdio"
+enabled = true
+command = "/Users/chandima/.local/bin/workspace-mcp"
+args = ["--single-user", "--tools", "drive", "docs", "slides", "sheets", "gmail", "calendar"]
+
+[agents.mcp.env]
+GOOGLE_OAUTH_CLIENT_ID = "${GOOGLE_OAUTH_CLIENT_ID}"
+GOOGLE_OAUTH_CLIENT_SECRET = "${GOOGLE_OAUTH_CLIENT_SECRET}"
+GOOGLE_MCP_CREDENTIALS_DIR = "/Users/chandima/.spacebot/google/workspace-tokens"
+USER_GOOGLE_EMAIL = "ccumaran@asu.edu"
+
+# YouTube MCP (custom — Data API + transcripts + yt-dlp fallback)
+[[agents.mcp]]
+name = "youtube"
+transport = "stdio"
+enabled = true
+command = "/Users/chandima/.local/bin/youtube-mcp"
+args = []
+init_timeout_secs = 60
+
+[agents.mcp.env]
+YOUTUBE_CREDENTIALS_PATH = "/Users/chandima/.spacebot/google/credentials.json"
+YOUTUBE_TOKEN_PATH = "/Users/chandima/.spacebot/google/youtube-token.json"
+
+[agents.routing]
+channel = "github-copilot/gpt-5-mini"
+worker = "github-copilot/gpt-5-mini"
+branch = "github-copilot/gpt-5-mini"
+compactor = "openai-chatgpt/gpt-5.1-codex-mini"
+cortex = "openai-chatgpt/gpt-5.1-codex-mini"
+
+# Agent links — hierarchical two-way between orchestrator and specialists
+[[links]]
+from = "default-agent"
+to = "architect-agent"
+direction = "two_way"
+kind = "hierarchical"
+
+[[links]]
+from = "default-agent"
+to = "coder-agent"
+direction = "two_way"
+kind = "hierarchical"
+
+[[links]]
+from = "default-agent"
+to = "reviewer-agent"
+direction = "two_way"
+kind = "hierarchical"
+
+[[links]]
+from = "default-agent"
+to = "slack-agent"
+direction = "two_way"
+kind = "hierarchical"
+
+[[links]]
+from = "default-agent"
+to = "notebooklm-agent"
+direction = "two_way"
+kind = "hierarchical"
+
+[[links]]
+from = "default-agent"
+to = "google-agent"
+direction = "two_way"
+kind = "hierarchical"
+
+# Bind default agent to Slack
+[[bindings]]
+agent_id = "default-agent"
+channel = "slack"
+
+# Enterprise Slack reader (browser token, stealth mode)
+[[defaults.mcp]]
+name = "enterprise-slack"
+transport = "stdio"
+enabled = true
+command = "/usr/local/bin/slack-mcp-server"
+args = []
+init_timeout_secs = 300
+
+[defaults.mcp.env]
+SLACK_MCP_XOXC_TOKEN = "xoxc-406065930433-533263702551-10809372820134-901a7813d337aadd9d1ff5e41cbc186e9d9e6997ff5acb82668650d87d0a7659"
+SLACK_MCP_XOXD_TOKEN = "xoxd-dKVY05F9cMb3oaUeSBqH4ACpylVSxjfsvIJV6eCY9J7lrTIOKK5aoSunCZSc6lcw14TGKoocTUMJJkeNCxH%2F%2FsMXZB4r7yCsE2yhRuRn6UZVqU56crUaEfFzaXeEqmn9dVNWlvjeAvU1PKinePttKyjJkbiK6LaZVFJncGQjQumRYpjE%2FQXJ15Kvpb6%2BmS8zQiFy0VQ1"
+SLACK_MCP_CACHE_TTL = "24h"
+SLACK_MCP_ATTACHMENT_TOOL = "true"
