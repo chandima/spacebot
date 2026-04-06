@@ -239,12 +239,45 @@ Defined at the defaults level in config, overridden per-agent:
 | `notebooklm` | `uvx notebooklm-mcp-cli notebooklm-mcp` | `notebooklm-agent` only | Google NotebookLM |
 | `google-workspace` | `workspace-mcp --single-user --tools drive docs slides sheets gmail calendar` | `google-agent` only | Google Drive, Docs, Slides, Sheets, Gmail, Calendar |
 | `youtube` | `youtube-mcp` | `google-agent` only | YouTube Data API, transcript extraction, yt-dlp fallback |
+| `linkedin` | `linkedin-scraper-mcp --log-level WARNING` | All agents (enabled by default) | LinkedIn profiles, companies, posts, jobs, messaging, search |
 
 ### Cron Jobs
 
 Cron jobs are stored in SQLite (`cron_jobs` table) per agent and loaded at startup. They drive the periodic Slack monitoring. All 10 cron jobs are on `default-agent` and deliver results to Slack DMs.
 
 The cron system has a **reconciliation loop** that runs every 5 minutes to catch jobs that were saved to the database but not registered with the in-memory scheduler (e.g. due to interrupted tool calls between the `save()` and `register()` await points).
+
+### LinkedIn Integration Use Cases
+
+The LinkedIn MCP integration (via `linkedin-scraper-mcp`) enables professional network research and monitoring workflows:
+
+**Research & Intelligence:**
+- Competitive analysis: "Find all ML engineers at Anthropic with Rust experience"
+- Market research: "What are the top companies hiring for Rust positions in Phoenix?"
+- Company monitoring: "Track new hires at competitor companies and alert me weekly"
+
+**Content Monitoring:**
+- Newsletter tracking: "Find posts from AI safety newsletters in the last 24 hours"
+- Thought leadership: "Get recent posts from OpenAI's LinkedIn page"
+- Hashtag tracking: "Monitor #rustlang posts from top influencers"
+
+**Automated Workflows (via Cron):**
+```toml
+# Example: Daily LinkedIn newsletter digest
+[[cron_job]]
+prompt = """
+Search LinkedIn for posts from AI safety newsletters in the last 24 hours.
+Extract article titles, URLs, and summaries. Send digest to Slack DM.
+"""
+interval = "0 9 * * *"  # Daily at 9am
+notify_channel_id = "C0AR3MA4L5C"
+```
+
+**Authentication:** One-time browser login creates a persistent session at `~/.linkedin-mcp/profile`. Session lasts 30-90 days and survives restarts.
+
+**Rate limits:** LinkedIn has undocumented limits. The MCP server uses Patchright (anti-detection Playwright fork) with human-like delays to avoid detection.
+
+**See:** `docs/design-docs/linkedin-integration.md` for full documentation.
 
 ## Nix Flake Workflow
 
