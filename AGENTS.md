@@ -124,6 +124,66 @@ rm -f ~/.spacebot/spacebot.pid ~/.spacebot/spacebot.sock
 
 **After deploying code changes, always restart the daemon.** The running binary at `~/.local/bin/spacebot` is the OLD build until you copy the new binary and restart.
 
+## Config Backup & Restore
+
+Agent configs, identity files, skills, and the launchd plist are version-controlled in `deploy/`. This is the canonical backup — restore from here if the machine is wiped.
+
+**What's backed up:**
+
+| Path | Contents |
+|------|----------|
+| `deploy/config.toml.template` | Full config with secrets replaced by `${PLACEHOLDER}` vars |
+| `deploy/agents/{agent-id}/` | IDENTITY.md, ROLE.md, SOUL.md per agent |
+| `deploy/agents/{agent-id}/skills/` | All agent skills (SKILL.md + scripts + configs) |
+| `deploy/com.spacebot.agent.plist` | launchd service definition (GH_TOKEN redacted) |
+
+**Secrets handling:** All secrets in `deploy/` are redacted to `${VAR}` placeholders. Never commit real tokens. The placeholder variables are:
+- `${SLACK_BOT_TOKEN}`, `${SLACK_APP_TOKEN}`, `${SLACK_BROWSER_TOKEN}`, `${SLACK_BROWSER_COOKIE}`
+- `${GH_TOKEN}`
+- `${GOOGLE_OAUTH_CLIENT_ID}`, `${GOOGLE_OAUTH_CLIENT_SECRET}`
+- Provider API keys: `${ANTHROPIC_API_KEY}`, `${OPENAI_API_KEY}`, etc.
+
+**Updating the backup after config changes:**
+```bash
+# Copy live config (redact secrets manually or via script)
+cp ~/.spacebot/config.toml deploy/config.toml.template
+# Edit to replace secrets with ${PLACEHOLDERS}
+
+# Copy agent identity/skill files
+cp -r ~/.spacebot/agents/*/identity/* deploy/agents/*/  # identity files
+cp -r ~/.spacebot/agents/*/skills/* deploy/agents/*/skills/  # skills
+
+# Commit (force-add needed — agents/ is gitignored)
+git add -f deploy/ && git commit -m "deploy: update config backup"
+```
+
+**Restoring to a new machine:**
+```bash
+# 1. Copy identity files
+for agent in deploy/agents/*/; do
+  id=$(basename "$agent")
+  mkdir -p ~/.spacebot/agents/$id/identity ~/.spacebot/agents/$id/skills
+  cp "$agent"/*.md ~/.spacebot/agents/$id/identity/ 2>/dev/null
+  cp -r "$agent"/skills/* ~/.spacebot/agents/$id/skills/ 2>/dev/null
+done
+
+# 2. Copy config template and fill in secrets
+cp deploy/config.toml.template ~/.spacebot/config.toml
+# Edit ~/.spacebot/config.toml — replace all ${PLACEHOLDERS} with real values
+
+# 3. Install launchd plist
+cp deploy/com.spacebot.agent.plist ~/Library/LaunchAgents/
+# Edit to set real GH_TOKEN
+
+# 4. Start
+~/.local/bin/spacebot start
+```
+
+**What is NOT backed up to git** (use Time Machine for these):
+- `~/.spacebot/agents/*/data/` — SQLite databases (conversations, memories, cron)
+- `~/.spacebot/agents/*/data/lance/` — LanceDB vector embeddings
+- `~/.spacebot/data/` — redb key-value store (secrets, settings)
+
 ## Deployed Agent Topology
 
 The deployed instance (`~/.spacebot/config.toml`) defines a multi-agent system with a hub-and-spoke topology. The `default-agent` orchestrator delegates to specialist agents via hierarchical two-way links.
