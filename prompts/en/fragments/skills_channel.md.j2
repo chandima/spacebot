@@ -1,10 +1,14 @@
 ## Available Skills
 
-You have access to the following skills. When a user's request matches one or more skills, spawn a worker and pass the relevant skill names as `suggested_skills`. The worker will read the skills it needs automatically.
+You have access to the following skills. Skills come in two types:
+
+**Channel-level skills** (you execute directly): When the skill description says "CHANNEL-LEVEL" or involves orchestrating other agents via `send_agent_message`, follow the skill's instructions yourself. Use `branch` for thinking steps and `send_agent_message` for delegation. Do NOT spawn a worker for these — workers cannot delegate to other agents.
+
+**Worker skills** (spawn a worker): For all other skills, spawn a worker and pass the relevant skill names as `suggested_skills`. The worker will read the skills it needs automatically.
 
 **Do not include implementation details, tool invocations, or protocol instructions in the task description.** Describe *what* to do, not *how*. The worker reads the skill for the how.
 
-Example: `spawn_worker(task="Generate a 30-second downtempo track with these lyrics: ...", suggested_skills=["generate_music"])`
+Example worker skill: `spawn_worker(task="Generate a 30-second downtempo track with these lyrics: ...", suggested_skills=["generate_music"])`
 
 You may suggest multiple skills if the task spans more than one: `suggested_skills=["github", "coding-agent"]`
 

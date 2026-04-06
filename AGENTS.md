@@ -147,15 +147,15 @@ The deployed instance (`~/.spacebot/config.toml`) defines a multi-agent system w
 
 ### Agent Definitions
 
-| Agent ID | Display Name | Purpose | Key Capabilities |
-|----------|-------------|---------|------------------|
-| `default-agent` | Spacebot | Primary user-facing orchestrator. Handles conversations via Slack, delegates all specialist work. | Slack Bot binding, 10 cron jobs for channel monitoring, branch/worker spawning |
-| `slack-agent` | Slack | Enterprise Slack workspace search and monitoring. Read-only access to all channels, messages, users, and files. | Enterprise Slack MCP (`slack-mcp-server` with `xoxc`/`xoxd` browser tokens), `conversations_search_messages`, `users_list`, channel history |
-| `architect-agent` | Architect | Problem framing, scope review, architecture lock, design document production. | High-quality model routing (gpt-5.4 for channel+worker) |
-| `coder-agent` | Coder | TDD implementation specialist. Writes code via OpenCode workers. | Codex model routing (`gpt-5.3-codex`), OpenCode subprocess workers |
-| `reviewer-agent` | Reviewer | Three-phase adversarial code review and QA verification. | Alternative model (`kimi-k2.5`) for diverse perspective |
-| `notebooklm-agent` | NotebookLM | Research, knowledge management, and content generation. | NotebookLM MCP server (`notebooklm-mcp-cli`) |
-| `google-agent` | Google | Google Workspace and YouTube specialist. Drive, Docs, Slides, Sheets, Gmail, Calendar, YouTube search, subscriptions, and transcript extraction. | Google Workspace MCP (`workspace-mcp`), custom YouTube MCP (`youtube-mcp`) |
+| Agent ID | Display Name | Models (ch/wk/br) | Skills | MCP Servers |
+|----------|-------------|-------------------|--------|-------------|
+| `default-agent` | Spacebot | gpt-5.4 / gpt-5-mini / gpt-5-mini | adversarial-coding-pipeline, agent-capabilities, github-ops | searxng, microsoft, enterprise-slack |
+| `slack-agent` | Slack | gpt-5-mini / gpt-5-mini / gpt-5-mini | — | enterprise-slack, searxng, microsoft |
+| `architect-agent` | Architect | gpt-5.4 / gpt-5.4 / gpt-5-mini | office-hours, architecture-lock, pr-slicer, context7-docs, github-ops, chrome-devtools, a11y-debugging | searxng, microsoft, chrome-devtools |
+| `coder-agent` | Coder | gpt-5.3-codex / gpt-5.3-codex / gpt-5-mini | tdd-red-green, di-patterns, fix-first, review-fix-loop, browser-testing, dev-preview, context7-docs, github-ops, chrome-devtools, a11y-debugging | searxng, microsoft, chrome-devtools |
+| `reviewer-agent` | Reviewer | glm-5 / glm-5 / gpt-5-mini | spec-compliance, adversarial-review, code-quality, qa-verification, simplicity-review, production-hardening, security-auditor, context7-docs, github-ops, chrome-devtools, a11y-debugging | searxng, microsoft, chrome-devtools |
+| `notebooklm-agent` | NotebookLM | gpt-5-mini / gpt-5-mini / gpt-5-mini | — | notebooklm, searxng, microsoft |
+| `google-agent` | Google | gpt-5-mini / gpt-5-mini / gpt-5-mini | — | google-workspace, youtube, searxng, microsoft |
 
 ### Slack Integration Architecture
 
