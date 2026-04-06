@@ -209,13 +209,13 @@ The deployed instance (`~/.spacebot/config.toml`) defines a multi-agent system w
 
 | Agent ID | Display Name | Models (ch/wk/br) | Skills | MCP Servers |
 |----------|-------------|-------------------|--------|-------------|
-| `default-agent` | Spacebot | gpt-5.4 / gpt-5-mini / gpt-5-mini | adversarial-coding-pipeline, agent-capabilities, github-ops | searxng, microsoft, enterprise-slack |
+| `default-agent` | Spacebot | gpt-5.4 / gpt-5-mini / gpt-5-mini | adversarial-coding-pipeline, adversarial-research-pipeline, agent-capabilities, github-ops | searxng, microsoft, enterprise-slack, fetcher, pdf-reader, rss-feeds |
 | `slack-agent` | Slack | gpt-5-mini / gpt-5-mini / gpt-5-mini | — | enterprise-slack, searxng, microsoft |
-| `architect-agent` | Architect | gpt-5.4 / gpt-5.4 / gpt-5-mini | office-hours, architecture-lock, pr-slicer, context7-docs, github-ops, chrome-devtools, a11y-debugging | searxng, microsoft, chrome-devtools |
+| `architect-agent` | Architect | gpt-5.4 / gpt-5.4 / gpt-5-mini | office-hours, architecture-lock, research-planner, pr-slicer, context7-docs, github-ops, chrome-devtools, a11y-debugging | searxng, microsoft, chrome-devtools, fetcher, pdf-reader |
 | `coder-agent` | Coder | gpt-5.3-codex / gpt-5.3-codex / gpt-5-mini | tdd-red-green, di-patterns, fix-first, review-fix-loop, browser-testing, dev-preview, context7-docs, github-ops, chrome-devtools, a11y-debugging | searxng, microsoft, chrome-devtools |
-| `reviewer-agent` | Reviewer | glm-5 / glm-5 / gpt-5-mini | spec-compliance, adversarial-review, code-quality, qa-verification, simplicity-review, production-hardening, security-auditor, context7-docs, github-ops, chrome-devtools, a11y-debugging | searxng, microsoft, chrome-devtools |
+| `reviewer-agent` | Reviewer | glm-5 / glm-5 / gpt-5-mini | spec-compliance, adversarial-review, research-critic, code-quality, qa-verification, simplicity-review, production-hardening, security-auditor, context7-docs, github-ops, chrome-devtools, a11y-debugging | searxng, microsoft, chrome-devtools, fetcher, pdf-reader |
 | `notebooklm-agent` | NotebookLM | gpt-5-mini / gpt-5-mini / gpt-5-mini | — | notebooklm, searxng, microsoft |
-| `google-agent` | Google | gpt-5-mini / gpt-5-mini / gpt-5-mini | — | google-workspace, youtube, searxng, microsoft |
+| `google-agent` | Google | gpt-5-mini / gpt-5-mini / gpt-5-mini | — | google-workspace, youtube, searxng, microsoft, fetcher, pdf-reader, arxiv, paper-search |
 
 ### Slack Integration Architecture
 
@@ -240,6 +240,11 @@ Defined at the defaults level in config, overridden per-agent:
 | `google-workspace` | `workspace-mcp --single-user --tools drive docs slides sheets gmail calendar` | `google-agent` only | Google Drive, Docs, Slides, Sheets, Gmail, Calendar |
 | `youtube` | `youtube-mcp` | `google-agent` only | YouTube Data API, transcript extraction, yt-dlp fallback |
 | `linkedin` | `linkedin-scraper-mcp --log-level WARNING` | All agents (enabled by default) | LinkedIn profiles, companies, posts, jobs, messaging, search |
+| `fetcher` | `npx fetcher-mcp` | All agents | Web page → clean Markdown via Playwright |
+| `pdf-reader` | `npx @sylphx/pdf-reader-mcp` | All agents | PDF text extraction |
+| `arxiv` | `uvx arxiv-mcp-server` | `google-agent` only | arXiv paper search & analysis |
+| `paper-search` | `npx paper-search-mcp-nodejs` | `google-agent` only | Multi-source academic search (arXiv, PubMed, Semantic Scholar, Google Scholar, etc.) |
+| `rss-feeds` | `npx rss-feeds-mcp` | `default-agent` only | RSS/newsletter monitoring for cron-based research |
 
 ### Cron Jobs
 
@@ -675,3 +680,5 @@ These are validated patterns from research (see `docs/research/pattern-analysis.
 - `docs/design-docs/sandbox.md` — sandbox implementation (shell/file isolation)
 - `docs/design-docs/working-memory.md` — working memory system (situational awareness)
 - `docs/design-docs/google-youtube-integration.md` — Google Workspace + YouTube MCP integration
+- `docs/design-docs/adversarial-research-pipeline.md` — adversarial research pipeline (STORM-inspired)
+- `docs/design-docs/linkedin-integration.md` — LinkedIn MCP integration guide
