@@ -41,6 +41,11 @@ All MCP servers are active and integrated via stdio transport.
 | **notebooklm** | ✅ Active | Google account | `notebooklm-agent` only | Google NotebookLM |
 | **google-workspace** | ✅ Active | OAuth | `google-agent` only | Drive, Docs, Slides, Sheets, Gmail, Calendar |
 | **youtube** | ✅ Active | OAuth (Data API) + unauthenticated (transcripts) | `google-agent` only | YouTube subscriptions, search, transcripts |
+| **fetcher** | ✅ Active | None | All | Web page → clean Markdown via Playwright |
+| **pdf-reader** | ✅ Active | None | All | PDF text extraction |
+| **arxiv** | ✅ Active | None (public API) | `google-agent` only | arXiv paper search & analysis |
+| **paper-search** | ✅ Active | None (public APIs) | `google-agent` only | Multi-source academic search (arXiv, PubMed, Semantic Scholar, etc.) |
+| **rss-feeds** | ✅ Active | None | `default-agent` only | RSS/newsletter monitoring |
 
 ### MCP Authentication Setup Steps
 
@@ -184,6 +189,13 @@ npm install -g @softeria/ms-365-mcp-server
 npm install -g workspace-mcp
 npm install -g youtube-mcp
 npm install -g mcp-searxng
+
+# Research pipeline MCP servers
+npm install -g fetcher-mcp
+npm install -g @sylphx/pdf-reader-mcp
+npm install -g paper-search-mcp-nodejs
+npm install -g rss-feeds-mcp
+uv tool install arxiv-mcp-server
 ```
 
 ### 2. LLM Provider Auth

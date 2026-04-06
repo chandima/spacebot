@@ -220,3 +220,7 @@ A cron job on `google-agent` fires daily:
 1. `youtube_get_recent_from_subscriptions(max_channels=15, videos_per_channel=2)`
 2. Summarize new videos by topic
 3. Deliver digest to Slack DM via delegation to `default-agent`
+
+## Related
+
+- **[Adversarial Research Pipeline](adversarial-research-pipeline.md)** — uses Google Workspace MCP (for output to Docs/Slides/Sheets), YouTube MCP (for video research), and additional research MCP servers (arxiv, paper-search, fetcher, pdf-reader) in a structured multi-agent research workflow.

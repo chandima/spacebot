@@ -80,6 +80,27 @@ MS365_MCP_TOKEN_CACHE_PATH = "/Users/chandima/.spacebot/ms365/token-cache.json"
 MS365_MCP_SELECTED_ACCOUNT_PATH = "/Users/chandima/.spacebot/ms365/selected-account.json"
 PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
+# Web page fetching — converts pages to clean Markdown via Playwright
+[[defaults.mcp]]
+name = "fetcher"
+transport = "stdio"
+enabled = true
+command = "/opt/homebrew/bin/npx"
+args = ["-y", "fetcher-mcp"]
+init_timeout_secs = 120
+
+[defaults.mcp.env]
+PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+
+# PDF text extraction
+[[defaults.mcp]]
+name = "pdf-reader"
+transport = "stdio"
+enabled = true
+command = "/opt/homebrew/bin/npx"
+args = ["-y", "@sylphx/pdf-reader-mcp"]
+init_timeout_secs = 120
+
 # Browser configuration
 [defaults.browser]
 persist_session = true
@@ -88,6 +109,16 @@ persist_session = true
 [[agents]]
 id = "default-agent"
 name = "Spacebot"
+
+# RSS feed monitoring for research cron jobs
+[[agents.mcp]]
+name = "rss-feeds"
+transport = "stdio"
+enabled = true
+command = "/opt/homebrew/bin/npx"
+args = ["-y", "rss-feeds-mcp"]
+init_timeout_secs = 120
+
 [[agents.mcp]]
 name = "enterprise-slack"
 transport = "stdio"
@@ -284,6 +315,23 @@ init_timeout_secs = 60
 [agents.mcp.env]
 YOUTUBE_CREDENTIALS_PATH = "/Users/chandima/.spacebot/google/credentials.json"
 YOUTUBE_TOKEN_PATH = "/Users/chandima/.spacebot/google/youtube-token.json"
+
+# arXiv paper search & analysis
+[[agents.mcp]]
+name = "arxiv"
+transport = "stdio"
+enabled = true
+command = "/Users/chandima/.local/bin/uvx"
+args = ["arxiv-mcp-server"]
+
+# Multi-source academic paper search (arXiv, PubMed, Semantic Scholar, Google Scholar, etc.)
+[[agents.mcp]]
+name = "paper-search"
+transport = "stdio"
+enabled = true
+command = "/opt/homebrew/bin/npx"
+args = ["-y", "paper-search-mcp-nodejs"]
+init_timeout_secs = 120
 
 [agents.routing]
 channel = "github-copilot/gpt-5-mini"

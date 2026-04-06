@@ -223,6 +223,23 @@ Connect workers to external [MCP](https://modelcontextprotocol.io/) (Model Conte
 - **Both transports** — stdio (subprocess) for local tools, streamable HTTP for remote servers
 - **Automatic tool discovery** — tools are discovered via the MCP protocol and registered on worker ToolServers with namespaced names (`{server}_{tool}`)
 - **Automatic retry** — failed connections retry in the background with exponential backoff (5s initial, 60s cap, 12 attempts). A broken server never blocks agent startup
+
+**Integrated MCP servers** (deployed instance):
+
+| Server | Purpose | Scope |
+|--------|---------|-------|
+| SearXNG | Web search | All agents |
+| LinkedIn | Professional network research | All agents |
+| Fetcher | Web page → clean Markdown | All agents |
+| PDF Reader | PDF text extraction | All agents |
+| Microsoft 365 | Calendar, mail, contacts, files | Selected agents |
+| Enterprise Slack | Workspace search/history | slack-agent |
+| Google Workspace | Drive, Docs, Slides, Sheets, Gmail, Calendar | google-agent |
+| YouTube | Subscriptions, search, transcripts | google-agent |
+| arXiv | Academic paper search | google-agent |
+| Paper Search | Multi-source academic search | google-agent |
+| NotebookLM | Google NotebookLM | notebooklm-agent |
+| RSS Feeds | Newsletter/feed monitoring | default-agent |
 - **Hot-reloadable** — add, remove, or change servers in config and they reconcile live
 - **API management** — full CRUD API under `/api/mcp/` for managing server definitions and monitoring connection status programmatically
 
@@ -401,6 +418,11 @@ Scheduled recurring tasks. Each cron job gets a fresh short-lived channel with f
 ### Multi-Agent
 
 Each agent is an independent entity with its own workspace, databases, identity files, cortex, and messaging bindings. All agents share one binary, one tokio runtime, and one set of API keys.
+
+**Built-in multi-agent pipelines:**
+
+- **Adversarial Coding Pipeline** — architect → coder → reviewer loop with structured verdicts, convergence detection, and HITL gates. Different models catch different bugs.
+- **Adversarial Research Pipeline** — STORM-inspired research with multi-perspective discovery, parallel data gathering workers, and adversarial quality review (fact-checking, bias detection, perspective gap analysis). Outputs to Slack, Gists, or Google Docs/Slides. See `docs/design-docs/adversarial-research-pipeline.md`.
 
 ---
 
