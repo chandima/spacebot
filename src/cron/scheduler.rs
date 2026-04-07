@@ -1239,8 +1239,7 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
                         pending_delegations.load(std::sync::atomic::Ordering::Relaxed) == 0;
                     if workers_empty && delegations_empty {
                         idle_drain_deadline = Some(
-                            tokio::time::Instant::now()
-                                + Duration::from_secs(CRON_IDLE_DRAIN_SECS),
+                            tokio::time::Instant::now() + Duration::from_secs(CRON_IDLE_DRAIN_SECS),
                         );
                         tracing::info!(
                             cron_id = %job.id,

@@ -347,9 +347,8 @@ async fn fetch_copilot_models(instance_dir: &std::path::Path) -> anyhow::Result<
     let base_url = if token.is_device_flow() {
         "https://api.githubcopilot.com".to_string()
     } else {
-        crate::github_copilot_auth::derive_base_url_from_token(&token.token).unwrap_or_else(|| {
-            crate::github_copilot_auth::DEFAULT_COPILOT_API_BASE_URL.to_string()
-        })
+        crate::github_copilot_auth::derive_base_url_from_token(&token.token)
+            .unwrap_or_else(|| crate::github_copilot_auth::DEFAULT_COPILOT_API_BASE_URL.to_string())
     };
 
     let client = reqwest::Client::new();
@@ -390,10 +389,7 @@ async fn fetch_copilot_models(instance_dir: &std::path::Path) -> anyhow::Result<
             .and_then(|s| s.tool_calls.or(s.tools))
             .unwrap_or(false);
 
-        let display_name = model
-            .name
-            .clone()
-            .unwrap_or_else(|| model.id.clone());
+        let display_name = model.name.clone().unwrap_or_else(|| model.id.clone());
 
         models.push(ModelInfo {
             id: format!("github-copilot/{}", model.id),
@@ -457,9 +453,7 @@ async fn fetch_openai_compatible_models(
     let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
     let client = reqwest::Client::new();
 
-    let mut request = client
-        .get(&url)
-        .timeout(std::time::Duration::from_secs(10));
+    let mut request = client.get(&url).timeout(std::time::Duration::from_secs(10));
 
     if !api_key.is_empty() {
         request = request.header("Authorization", format!("Bearer {api_key}"));
@@ -524,7 +518,11 @@ async fn ensure_custom_provider_models_cache(
 /// - `provider_statuses`: full status list for the response
 pub(super) async fn configured_providers(
     config_path: &std::path::Path,
-) -> (Vec<String>, Vec<(String, String, String)>, Vec<ProviderStatus>) {
+) -> (
+    Vec<String>,
+    Vec<(String, String, String)>,
+    Vec<ProviderStatus>,
+) {
     let mut configured_ids = Vec::new();
     let mut custom_providers: Vec<(String, String, String)> = Vec::new();
     let mut statuses = Vec::new();
@@ -552,24 +550,69 @@ pub(super) async fn configured_providers(
 
     // --- Built-in providers with static API keys ---
     let builtin_providers: &[(&str, &str, &str, &str)] = &[
-        ("anthropic", "anthropic_key", "ANTHROPIC_API_KEY", "Anthropic"),
+        (
+            "anthropic",
+            "anthropic_key",
+            "ANTHROPIC_API_KEY",
+            "Anthropic",
+        ),
         ("openai", "openai_key", "OPENAI_API_KEY", "OpenAI"),
-        ("openrouter", "openrouter_key", "OPENROUTER_API_KEY", "OpenRouter"),
+        (
+            "openrouter",
+            "openrouter_key",
+            "OPENROUTER_API_KEY",
+            "OpenRouter",
+        ),
         ("kilo", "kilo_key", "KILO_API_KEY", "Kilo"),
         ("zhipu", "zhipu_key", "ZHIPU_API_KEY", "ZhipuAI"),
         ("groq", "groq_key", "GROQ_API_KEY", "Groq"),
-        ("together", "together_key", "TOGETHER_API_KEY", "Together AI"),
-        ("fireworks", "fireworks_key", "FIREWORKS_API_KEY", "Fireworks AI"),
+        (
+            "together",
+            "together_key",
+            "TOGETHER_API_KEY",
+            "Together AI",
+        ),
+        (
+            "fireworks",
+            "fireworks_key",
+            "FIREWORKS_API_KEY",
+            "Fireworks AI",
+        ),
         ("deepseek", "deepseek_key", "DEEPSEEK_API_KEY", "DeepSeek"),
         ("xai", "xai_key", "XAI_API_KEY", "xAI"),
         ("mistral", "mistral_key", "MISTRAL_API_KEY", "Mistral AI"),
         ("gemini", "gemini_key", "GEMINI_API_KEY", "Google Gemini"),
-        ("opencode-zen", "opencode_zen_key", "OPENCODE_ZEN_API_KEY", "OpenCode Zen"),
-        ("opencode-go", "opencode_go_key", "OPENCODE_GO_API_KEY", "OpenCode Go"),
+        (
+            "opencode-zen",
+            "opencode_zen_key",
+            "OPENCODE_ZEN_API_KEY",
+            "OpenCode Zen",
+        ),
+        (
+            "opencode-go",
+            "opencode_go_key",
+            "OPENCODE_GO_API_KEY",
+            "OpenCode Go",
+        ),
         ("minimax", "minimax_key", "MINIMAX_API_KEY", "MiniMax"),
-        ("minimax-cn", "minimax_cn_key", "MINIMAX_CN_API_KEY", "MiniMax CN"),
-        ("moonshot", "moonshot_key", "MOONSHOT_API_KEY", "Moonshot AI"),
-        ("zai-coding-plan", "zai_coding_plan_key", "ZAI_CODING_PLAN_API_KEY", "ZAI Coding Plan"),
+        (
+            "minimax-cn",
+            "minimax_cn_key",
+            "MINIMAX_CN_API_KEY",
+            "MiniMax CN",
+        ),
+        (
+            "moonshot",
+            "moonshot_key",
+            "MOONSHOT_API_KEY",
+            "Moonshot AI",
+        ),
+        (
+            "zai-coding-plan",
+            "zai_coding_plan_key",
+            "ZAI_CODING_PLAN_API_KEY",
+            "ZAI Coding Plan",
+        ),
     ];
 
     for &(id, config_key, env_var, display_name) in builtin_providers {
@@ -580,28 +623,35 @@ pub(super) async fn configured_providers(
         statuses.push(ProviderStatus {
             id: id.to_string(),
             name: display_name.to_string(),
-            auth_type: if configured { "api_key".into() } else { "none".into() },
+            auth_type: if configured {
+                "api_key".into()
+            } else {
+                "none".into()
+            },
             configured,
         });
     }
 
     // --- OpenAI ChatGPT (OAuth) ---
-    let openai_chatgpt_configured = instance_dir
-        .is_some_and(|dir| crate::openai_auth::credentials_path(dir).exists());
+    let openai_chatgpt_configured =
+        instance_dir.is_some_and(|dir| crate::openai_auth::credentials_path(dir).exists());
     if openai_chatgpt_configured {
         configured_ids.push("openai-chatgpt".to_string());
     }
     statuses.push(ProviderStatus {
         id: "openai-chatgpt".to_string(),
         name: "OpenAI ChatGPT".to_string(),
-        auth_type: if openai_chatgpt_configured { "oauth".into() } else { "none".into() },
+        auth_type: if openai_chatgpt_configured {
+            "oauth".into()
+        } else {
+            "none".into()
+        },
         configured: openai_chatgpt_configured,
     });
 
     // --- GitHub Copilot (device flow or PAT) ---
-    let copilot_device_flow = instance_dir.is_some_and(|dir| {
-        crate::github_copilot_auth::credentials_path(dir).exists()
-    });
+    let copilot_device_flow =
+        instance_dir.is_some_and(|dir| crate::github_copilot_auth::credentials_path(dir).exists());
     let copilot_pat = has_key("github_copilot_key", "GITHUB_COPILOT_KEY");
     let copilot_configured = copilot_device_flow || copilot_pat;
     if copilot_configured {
@@ -697,9 +747,7 @@ pub(super) async fn get_models(
     let config_path = state.config_path.read().await.clone();
     let (configured, custom_providers, provider_statuses) =
         configured_providers(&config_path).await;
-    let instance_dir = config_path
-        .parent()
-        .unwrap_or(std::path::Path::new("."));
+    let instance_dir = config_path.parent().unwrap_or(std::path::Path::new("."));
     let requested_provider = query
         .provider
         .as_deref()
@@ -778,8 +826,7 @@ pub(super) async fn get_models(
     // 4. Custom provider models (dynamically fetched from their endpoints)
     for (provider_id, base_url, api_key) in &custom_providers {
         let include = requested_provider == Some(provider_id.as_str())
-            || (requested_provider.is_none()
-                && configured.iter().any(|p| p == provider_id));
+            || (requested_provider.is_none() && configured.iter().any(|p| p == provider_id));
         if include {
             let custom_models =
                 ensure_custom_provider_models_cache(provider_id, base_url, api_key).await;
@@ -843,11 +890,17 @@ pub(super) async fn refresh_models(
     }
     {
         let mut cache = COPILOT_MODELS_CACHE.write().await;
-        *cache = (Vec::new(), std::time::Instant::now() - DYNAMIC_MODELS_CACHE_TTL);
+        *cache = (
+            Vec::new(),
+            std::time::Instant::now() - DYNAMIC_MODELS_CACHE_TTL,
+        );
     }
     {
         let mut cache = CUSTOM_PROVIDER_MODELS_CACHE.write().await;
-        *cache = (HashMap::new(), std::time::Instant::now() - DYNAMIC_MODELS_CACHE_TTL);
+        *cache = (
+            HashMap::new(),
+            std::time::Instant::now() - DYNAMIC_MODELS_CACHE_TTL,
+        );
     }
 
     get_models(

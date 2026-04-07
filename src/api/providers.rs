@@ -506,10 +506,27 @@ pub(super) async fn get_providers(
             if let Ok(doc) = content.parse::<toml_edit::DocumentMut>() {
                 if let Some(llm) = doc.get("llm") {
                     let builtin_ids: &[&str] = &[
-                        "anthropic", "openai", "openrouter", "kilo", "zhipu", "groq",
-                        "together", "fireworks", "deepseek", "xai", "mistral", "gemini",
-                        "ollama", "opencode-zen", "opencode-go", "nvidia", "minimax",
-                        "minimax-cn", "moonshot", "zai-coding-plan", "github-copilot",
+                        "anthropic",
+                        "openai",
+                        "openrouter",
+                        "kilo",
+                        "zhipu",
+                        "groq",
+                        "together",
+                        "fireworks",
+                        "deepseek",
+                        "xai",
+                        "mistral",
+                        "gemini",
+                        "ollama",
+                        "opencode-zen",
+                        "opencode-go",
+                        "nvidia",
+                        "minimax",
+                        "minimax-cn",
+                        "moonshot",
+                        "zai-coding-plan",
+                        "github-copilot",
                     ];
                     for table_key in &["provider", "providers"] {
                         if let Some(providers_table) = llm.get(table_key)
@@ -1030,9 +1047,7 @@ async fn run_copilot_device_flow_background(
 
                 // Optionally apply model routing
                 if !model.is_empty() {
-                    if let Err(error) =
-                        apply_copilot_routing(&state, &model).await
-                    {
+                    if let Err(error) = apply_copilot_routing(&state, &model).await {
                         tracing::warn!(%error, "failed to apply Copilot routing");
                     }
                 }

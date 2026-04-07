@@ -7,7 +7,7 @@
     
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/chandima/.local/bin/spacebot-wrapper.sh</string>
+        <string>/Users/chandima/.local/bin/spacebot-launchd.sh</string>
     </array>
     
     <key>RunAtLoad</key>

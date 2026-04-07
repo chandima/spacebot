@@ -2864,9 +2864,7 @@ fn parse_openai_responses_sse_response(
                     let mut response = response.clone();
                     // Patch the empty output array with items collected from
                     // incremental response.output_item.done events.
-                    let output_empty = response["output"]
-                        .as_array()
-                        .is_none_or(|a| a.is_empty());
+                    let output_empty = response["output"].as_array().is_none_or(|a| a.is_empty());
                     if output_empty && !collected_output_items.is_empty() {
                         response["output"] =
                             serde_json::Value::Array(collected_output_items.clone());

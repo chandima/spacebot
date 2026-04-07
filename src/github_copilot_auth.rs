@@ -301,11 +301,7 @@ pub async fn poll_github_device_token(device_code: &str) -> Result<GithubDeviceP
         .context("failed to read GitHub device token poll response")?;
 
     if !status.is_success() {
-        anyhow::bail!(
-            "GitHub device token poll failed ({}): {}",
-            status,
-            body
-        );
+        anyhow::bail!("GitHub device token poll failed ({}): {}", status, body);
     }
 
     #[derive(Deserialize)]

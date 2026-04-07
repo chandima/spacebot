@@ -388,8 +388,11 @@ pub struct ChannelInjection {
 /// Shared registry of active channel message senders, keyed by conversation_id.
 /// Used by the injection consumer to route cross-agent messages to ephemeral
 /// channels (e.g. cron channels) that aren't tracked in main.rs's `active_channels`.
-pub type ChannelRegistry =
-    std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, tokio::sync::mpsc::Sender<InboundMessage>>>>;
+pub type ChannelRegistry = std::sync::Arc<
+    tokio::sync::RwLock<
+        std::collections::HashMap<String, tokio::sync::mpsc::Sender<InboundMessage>>,
+    >,
+>;
 
 /// Shared dependency bundle for agent processes.
 #[derive(Clone)]

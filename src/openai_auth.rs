@@ -498,7 +498,11 @@ pub async fn login_browser_interactive(instance_dir: &Path) -> Result<OAuthCrede
                         .map(|d| d.as_str())
                         .unwrap_or("unknown error");
                     code_tx
-                        .send(Err(anyhow::anyhow!("OAuth error: {} — {}", error, description)))
+                        .send(Err(anyhow::anyhow!(
+                            "OAuth error: {} — {}",
+                            error,
+                            description
+                        )))
                         .await
                         .ok();
                     return axum::response::Html(
@@ -539,15 +543,14 @@ pub async fn login_browser_interactive(instance_dir: &Path) -> Result<OAuthCrede
         }
     };
 
-    let app = axum::Router::new().route(
-        "/auth/callback",
-        axum::routing::get(callback_handler),
-    );
+    let app = axum::Router::new().route("/auth/callback", axum::routing::get(callback_handler));
 
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{BROWSER_OAUTH_PORT}"))
         .await
         .with_context(|| {
-            format!("failed to bind to localhost:{BROWSER_OAUTH_PORT} — is another process using it?")
+            format!(
+                "failed to bind to localhost:{BROWSER_OAUTH_PORT} — is another process using it?"
+            )
         })?;
 
     eprintln!("\nOpening browser for OpenAI authentication...\n");
@@ -561,9 +564,7 @@ pub async fn login_browser_interactive(instance_dir: &Path) -> Result<OAuthCrede
 
     // Run server with a 5-minute timeout
     let server_handle = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .await
-            .ok();
+        axum::serve(listener, app).await.ok();
     });
 
     let code = tokio::select! {
@@ -675,9 +676,7 @@ fn jwt_exp(token: &str) -> Option<i64> {
         3 => format!("{payload}="),
         _ => payload.to_string(),
     };
-    let bytes = URL_SAFE_NO_PAD
-        .decode(padded.trim_end_matches('='))
-        .ok()?;
+    let bytes = URL_SAFE_NO_PAD.decode(padded.trim_end_matches('=')).ok()?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     value.get("exp")?.as_i64()
 }

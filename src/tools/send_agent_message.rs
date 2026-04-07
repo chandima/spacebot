@@ -258,7 +258,10 @@ impl Tool for SendAgentMessageTool {
         // Signal to the cron idle-drain that a delegation is in flight.
         if let Some(ref counter) = self.pending_delegations {
             counter.fetch_add(1, Ordering::Relaxed);
-            tracing::info!(task_number, "incremented pending_delegations for delegation");
+            tracing::info!(
+                task_number,
+                "incremented pending_delegations for delegation"
+            );
         }
 
         // Log delegation record in the link channel (system message).
