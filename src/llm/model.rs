@@ -2835,6 +2835,11 @@ fn parse_openai_responses_sse_response(
     response_text: &str,
     provider_label: &str,
 ) -> Result<serde_json::Value, CompletionError> {
+    // Collect output items from response.output_item.done events since the
+    // response.completed event from the ChatGPT Codex backend returns an empty
+    // output array — the actual items are only delivered incrementally.
+    let mut collected_output_items: Vec<serde_json::Value> = Vec::new();
+
     for line in response_text.lines() {
         let Some(data) = line.strip_prefix("data: ") else {
             continue;
@@ -2848,10 +2853,28 @@ fn parse_openai_responses_sse_response(
             continue;
         };
 
-        if event_body["type"].as_str() == Some("response.completed")
-            && let Some(response) = event_body.get("response")
-        {
-            return Ok(response.clone());
+        match event_body["type"].as_str() {
+            Some("response.output_item.done") => {
+                if let Some(item) = event_body.get("item") {
+                    collected_output_items.push(item.clone());
+                }
+            }
+            Some("response.completed") => {
+                if let Some(response) = event_body.get("response") {
+                    let mut response = response.clone();
+                    // Patch the empty output array with items collected from
+                    // incremental response.output_item.done events.
+                    let output_empty = response["output"]
+                        .as_array()
+                        .is_none_or(|a| a.is_empty());
+                    if output_empty && !collected_output_items.is_empty() {
+                        response["output"] =
+                            serde_json::Value::Array(collected_output_items.clone());
+                    }
+                    return Ok(response);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -3767,5 +3790,43 @@ mod tests {
         let msg = format_api_error(status, &body);
         assert!(msg.contains("Google"));
         assert!(msg.contains("invalid schema"));
+    }
+
+    #[test]
+    fn parse_sse_patches_empty_output_from_incremental_events() {
+        // Simulates the ChatGPT Codex backend SSE format where
+        // response.completed has an empty output array but actual items
+        // are delivered via response.output_item.done events.
+        let sse = r#"event: response.created
+data: {"type":"response.created","response":{"id":"resp_test","status":"in_progress","output":[]}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","summary":[]},"output_index":0}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"msg_1","type":"message","status":"completed","content":[{"type":"output_text","text":"Hello world"}],"role":"assistant"},"output_index":1}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_test","status":"completed","output":[],"usage":{"input_tokens":10,"output_tokens":5}}}
+"#;
+        let result = parse_openai_responses_sse_response(sse, "TestProvider").unwrap();
+        let output = result["output"].as_array().expect("output should be array");
+        assert_eq!(output.len(), 2, "should have patched 2 output items");
+        assert_eq!(output[0]["type"], "reasoning");
+        assert_eq!(output[1]["type"], "message");
+        assert_eq!(output[1]["content"][0]["text"], "Hello world");
+    }
+
+    #[test]
+    fn parse_sse_preserves_nonempty_output_in_completed_event() {
+        // When response.completed already has output items (non-Codex backend),
+        // the parser should NOT overwrite them.
+        let sse = r#"event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_test","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"original"}]}],"usage":{"input_tokens":10,"output_tokens":5}}}
+"#;
+        let result = parse_openai_responses_sse_response(sse, "TestProvider").unwrap();
+        let output = result["output"].as_array().expect("output should be array");
+        assert_eq!(output.len(), 1, "should keep original output");
+        assert_eq!(output[0]["content"][0]["text"], "original");
     }
 }
