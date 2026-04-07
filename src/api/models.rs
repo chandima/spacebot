@@ -96,11 +96,13 @@ static COPILOT_MODELS_CACHE: std::sync::LazyLock<
 > = std::sync::LazyLock::new(|| tokio::sync::RwLock::new((Vec::new(), std::time::Instant::now())));
 
 /// Cached models fetched from custom providers (keyed by provider ID).
-static CUSTOM_PROVIDER_MODELS_CACHE: std::sync::LazyLock<
-    tokio::sync::RwLock<(HashMap<String, Vec<ModelInfo>>, std::time::Instant)>,
-> = std::sync::LazyLock::new(|| {
-    tokio::sync::RwLock::new((HashMap::new(), std::time::Instant::now()))
-});
+type CustomProviderModelsCache =
+    tokio::sync::RwLock<(HashMap<String, Vec<ModelInfo>>, std::time::Instant)>;
+#[allow(clippy::type_complexity)]
+static CUSTOM_PROVIDER_MODELS_CACHE: std::sync::LazyLock<CustomProviderModelsCache> =
+    std::sync::LazyLock::new(|| {
+        tokio::sync::RwLock::new((HashMap::new(), std::time::Instant::now()))
+    });
 
 const MODELS_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
 
@@ -487,10 +489,11 @@ async fn ensure_custom_provider_models_cache(
 ) -> Vec<ModelInfo> {
     {
         let cache = CUSTOM_PROVIDER_MODELS_CACHE.read().await;
-        if let Some(models) = cache.0.get(provider_id) {
-            if !models.is_empty() && cache.1.elapsed() < DYNAMIC_MODELS_CACHE_TTL {
-                return models.clone();
-            }
+        if let Some(models) = cache.0.get(provider_id)
+            && !models.is_empty()
+            && cache.1.elapsed() < DYNAMIC_MODELS_CACHE_TTL
+        {
+            return models.clone();
         }
     }
 

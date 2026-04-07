@@ -501,64 +501,62 @@ pub(super) async fn get_providers(
 
     // Detect custom providers from [llm.provider.*] or [llm.providers.*]
     let mut custom = std::collections::HashMap::new();
-    if config_path.exists() {
-        if let Ok(content) = tokio::fs::read_to_string(&config_path).await {
-            if let Ok(doc) = content.parse::<toml_edit::DocumentMut>() {
-                if let Some(llm) = doc.get("llm") {
-                    let builtin_ids: &[&str] = &[
-                        "anthropic",
-                        "openai",
-                        "openrouter",
-                        "kilo",
-                        "zhipu",
-                        "groq",
-                        "together",
-                        "fireworks",
-                        "deepseek",
-                        "xai",
-                        "mistral",
-                        "gemini",
-                        "ollama",
-                        "opencode-zen",
-                        "opencode-go",
-                        "nvidia",
-                        "minimax",
-                        "minimax-cn",
-                        "moonshot",
-                        "zai-coding-plan",
-                        "github-copilot",
-                    ];
-                    for table_key in &["provider", "providers"] {
-                        if let Some(providers_table) = llm.get(table_key)
-                            && let Some(table) = providers_table.as_table_like()
-                        {
-                            for (provider_id, value) in table.iter() {
-                                if builtin_ids.contains(&provider_id) {
-                                    continue;
-                                }
-                                if let Some(provider_table) = value.as_table_like() {
-                                    let base_url = provider_table
-                                        .get("base_url")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let display_name = provider_table
-                                        .get("name")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or(provider_id)
-                                        .to_string();
+    if config_path.exists()
+        && let Ok(content) = tokio::fs::read_to_string(&config_path).await
+        && let Ok(doc) = content.parse::<toml_edit::DocumentMut>()
+        && let Some(llm) = doc.get("llm")
+    {
+        let builtin_ids: &[&str] = &[
+            "anthropic",
+            "openai",
+            "openrouter",
+            "kilo",
+            "zhipu",
+            "groq",
+            "together",
+            "fireworks",
+            "deepseek",
+            "xai",
+            "mistral",
+            "gemini",
+            "ollama",
+            "opencode-zen",
+            "opencode-go",
+            "nvidia",
+            "minimax",
+            "minimax-cn",
+            "moonshot",
+            "zai-coding-plan",
+            "github-copilot",
+        ];
+        for table_key in &["provider", "providers"] {
+            if let Some(providers_table) = llm.get(table_key)
+                && let Some(table) = providers_table.as_table_like()
+            {
+                for (provider_id, value) in table.iter() {
+                    if builtin_ids.contains(&provider_id) {
+                        continue;
+                    }
+                    if let Some(provider_table) = value.as_table_like() {
+                        let base_url = provider_table
+                            .get("base_url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let display_name = provider_table
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(provider_id)
+                            .to_string();
 
-                                    if !base_url.is_empty() {
-                                        custom.insert(
-                                            provider_id.to_string(),
-                                            CustomProviderInfo {
-                                                name: display_name,
-                                                base_url,
-                                            },
-                                        );
-                                    }
-                                }
-                            }
+                        if !base_url.is_empty() {
+                            custom.insert(
+                                provider_id.to_string(),
+                                CustomProviderInfo {
+                                    name: display_name,
+                                    base_url,
+                                },
+                            );
                         }
                     }
                 }
@@ -1046,10 +1044,10 @@ async fn run_copilot_device_flow_background(
                 }
 
                 // Optionally apply model routing
-                if !model.is_empty() {
-                    if let Err(error) = apply_copilot_routing(&state, &model).await {
-                        tracing::warn!(%error, "failed to apply Copilot routing");
-                    }
+                if !model.is_empty()
+                    && let Err(error) = apply_copilot_routing(&state, &model).await
+                {
+                    tracing::warn!(%error, "failed to apply Copilot routing");
                 }
 
                 state
