@@ -40,3 +40,6 @@ data/.tasks_migrated
 config.toml
 AUTHENTICATION-STATUS.md
 logs/
+deploy/config.toml.backup-codex-fix
+deploy/spacebot-launchd.sh
+opencode-analysis/
