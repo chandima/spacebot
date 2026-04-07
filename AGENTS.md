@@ -205,17 +205,46 @@ The deployed instance (`~/.spacebot/config.toml`) defines a multi-agent system w
                                                           + YouTube
 ```
 
+### LLM Provider & Model Reference
+
+Three LLM providers are configured. **All GPT models must come from `openai-chatgpt`**. Do not use generic model names — use the exact model IDs listed below.
+
+| Provider | Auth | Purpose | Available Models |
+|----------|------|---------|-----------------|
+| `github-copilot/*` | GitHub Copilot device flow | Claude Opus for default-agent orchestrator | `claude-opus-4.6` |
+| `openai-chatgpt/*` | OpenAI Codex CLI OAuth | All GPT/Codex models | See list below |
+| `litellm/*` | API key (LiteLLM Gateway) | GLM model for adversarial review | `glm-5` |
+
+**`openai-chatgpt` models (exhaustive list — do not invent model names):**
+
+| Model ID | Description |
+|----------|-------------|
+| `gpt-5.4` | Latest frontier agentic coding model |
+| `gpt-5.4-mini` | Smaller frontier agentic coding model |
+| `gpt-5.3-codex` | Frontier Codex-optimized agentic coding model |
+| `gpt-5.2-codex` | Frontier agentic coding model |
+| `gpt-5.2` | Optimized for professional work and long-running agents |
+| `gpt-5.1-codex-max` | Codex-optimized model for deep and fast reasoning |
+| `gpt-5.1-codex-mini` | Optimized for codex — cheaper, faster, but less capable |
+
+**Routing rules:**
+- `github-copilot/claude-opus-4.6` is **only** used for the `default-agent` channel (orchestrator reasoning)
+- `litellm/glm-5` is **only** used for `reviewer-agent` channel and worker (adversarial review)
+- **Every other model reference** must use `openai-chatgpt/<model-id>` with an exact model ID from the table above
+- Never use `github-copilot/gpt-*` — GitHub Copilot does not provide GPT models
+- Never use bare model names like `gpt-5-mini` — always prefix with the provider
+
 ### Agent Definitions
 
 | Agent ID | Display Name | Models (ch/wk/br) | Skills | MCP Servers |
 |----------|-------------|-------------------|--------|-------------|
-| `default-agent` | Spacebot | gpt-5.4 / gpt-5-mini / gpt-5-mini | adversarial-coding-pipeline, adversarial-research-pipeline, agent-capabilities, github-ops | searxng, microsoft, enterprise-slack, fetcher, pdf-reader, rss-feeds |
-| `slack-agent` | Slack | gpt-5-mini / gpt-5-mini / gpt-5-mini | — | enterprise-slack, searxng, microsoft |
-| `architect-agent` | Architect | gpt-5.4 / gpt-5.4 / gpt-5-mini | office-hours, architecture-lock, research-planner, pr-slicer, context7-docs, github-ops, chrome-devtools, a11y-debugging | searxng, microsoft, chrome-devtools, fetcher, pdf-reader |
-| `coder-agent` | Coder | gpt-5.3-codex / gpt-5.3-codex / gpt-5-mini | tdd-red-green, di-patterns, fix-first, review-fix-loop, browser-testing, dev-preview, context7-docs, github-ops, chrome-devtools, a11y-debugging | searxng, microsoft, chrome-devtools |
-| `reviewer-agent` | Reviewer | glm-5 / glm-5 / gpt-5-mini | spec-compliance, adversarial-review, research-critic, code-quality, qa-verification, simplicity-review, production-hardening, security-auditor, context7-docs, github-ops, chrome-devtools, a11y-debugging | searxng, microsoft, chrome-devtools, fetcher, pdf-reader |
-| `notebooklm-agent` | NotebookLM | gpt-5-mini / gpt-5-mini / gpt-5-mini | — | notebooklm, searxng, microsoft |
-| `google-agent` | Google | gpt-5-mini / gpt-5-mini / gpt-5-mini | — | google-workspace, youtube, searxng, microsoft, fetcher, pdf-reader, arxiv, paper-search |
+| `default-agent` | Spacebot | github-copilot/claude-opus-4.6 / openai-chatgpt/gpt-5.4-mini / openai-chatgpt/gpt-5.4-mini | adversarial-coding-pipeline, adversarial-research-pipeline, agent-capabilities, github-ops | searxng, microsoft, enterprise-slack, fetcher, pdf-reader, rss-feeds |
+| `slack-agent` | Slack | openai-chatgpt/gpt-5.4-mini / openai-chatgpt/gpt-5.4-mini / openai-chatgpt/gpt-5.4-mini | — | enterprise-slack, searxng, microsoft |
+| `architect-agent` | Architect | openai-chatgpt/gpt-5.4 / openai-chatgpt/gpt-5.4 / openai-chatgpt/gpt-5.4-mini | office-hours, architecture-lock, research-planner, pr-slicer, context7-docs, github-ops, chrome-devtools, a11y-debugging | searxng, microsoft, chrome-devtools, fetcher, pdf-reader |
+| `coder-agent` | Coder | openai-chatgpt/gpt-5.3-codex / openai-chatgpt/gpt-5.3-codex / openai-chatgpt/gpt-5.4-mini | tdd-red-green, di-patterns, fix-first, review-fix-loop, browser-testing, dev-preview, context7-docs, github-ops, chrome-devtools, a11y-debugging | searxng, microsoft, chrome-devtools |
+| `reviewer-agent` | Reviewer | litellm/glm-5 / litellm/glm-5 / openai-chatgpt/gpt-5.4-mini | spec-compliance, adversarial-review, research-critic, code-quality, qa-verification, simplicity-review, production-hardening, security-auditor, context7-docs, github-ops, chrome-devtools, a11y-debugging | searxng, microsoft, chrome-devtools, fetcher, pdf-reader |
+| `notebooklm-agent` | NotebookLM | openai-chatgpt/gpt-5.4-mini / openai-chatgpt/gpt-5.4-mini / openai-chatgpt/gpt-5.4-mini | — | notebooklm, searxng, microsoft |
+| `google-agent` | Google | openai-chatgpt/gpt-5.4-mini / openai-chatgpt/gpt-5.4-mini / openai-chatgpt/gpt-5.4-mini | — | google-workspace, youtube, searxng, microsoft, fetcher, pdf-reader, arxiv, paper-search |
 
 ### Slack Integration Architecture
 
