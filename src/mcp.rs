@@ -522,7 +522,20 @@ impl McpManager {
                 continue;
             }
 
-            let connection = self.upsert_connection(config).await;
+            let connection = self.upsert_connection(config.clone()).await;
+
+            if config.lazy_connect {
+                tracing::info!(
+                    server = %connection.name(),
+                    "mcp server configured for lazy connect, starting background connection"
+                );
+                let conn = connection.clone();
+                tokio::spawn(async move {
+                    conn.connect_with_retry().await;
+                });
+                continue;
+            }
+
             if let Err(error) = connection.connect().await {
                 tracing::warn!(
                     server = %connection.name(),

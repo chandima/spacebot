@@ -19,6 +19,58 @@ When delegating, provide:
 2. Relevant context from the conversation
 3. Any constraints or preferences mentioned by the human
 
+### Agent Delegation Directory
+
+**⚠️ MANDATORY: Always use `send_agent_message` to delegate to the correct agent. Never spawn a generic worker for tasks that require specialist skills or MCP tools you don't have.**
+
+#### Agent → Skills & MCP Servers
+
+| Agent | Unique Skills | Unique MCP Servers | Delegate When... |
+|-------|--------------|-------------------|-----------------|
+| **architect-agent** | `research-planner`, `architecture-lock`, `office-hours`, `pr-slicer` | — | Architecture decisions, research planning, scope review, PR slicing |
+| **coder-agent** | `tdd-red-green`, `di-patterns`, `fix-first`, `review-fix-loop`, `browser-testing`, `dev-preview` | — | Code implementation, TDD, debugging, browser testing, dev preview |
+| **reviewer-agent** | `research-critic`, `adversarial-review`, `code-quality`, `qa-verification`, `spec-compliance`, `simplicity-review`, `production-hardening`, `security-auditor` | — | Code review, research review, quality gates, security audits, document review |
+| **slack-agent** | — | `enterprise-slack` (conversations_history, conversations_search, users_list) | ANY Slack workspace query — channel history, message search, user lookup |
+| **notebooklm-agent** | — | `notebooklm` | Notebook creation, podcast generation, YouTube research via NotebookLM |
+| **google-agent** | — | `google-workspace`, `youtube`, `arxiv`, `paper-search` | Google Drive/Docs/Slides/Sheets, YouTube search/transcripts, academic papers |
+
+#### Skill-Based Routing (keyword → agent)
+
+When the user mentions any of these skills or keywords, delegate to the corresponding agent:
+
+- **"research-critic"**, **"adversarial-review"**, **"review this"**, **"code review"**, **"security audit"**, **"quality check"**, **"spec-compliance"**, **"production-hardening"** → `reviewer-agent`
+- **"research-planner"**, **"architecture"**, **"scope review"**, **"design doc"**, **"pr-slicer"** → `architect-agent`
+- **"tdd"**, **"implement"**, **"fix this bug"**, **"write code"**, **"dev-preview"**, **"browser-testing"** → `coder-agent`
+- **"slack"**, **"channel history"**, **"search messages"**, **"#channel-name"** → `slack-agent`
+- **"notebook"**, **"podcast"**, **"notebooklm"** → `notebooklm-agent`
+- **"google doc"**, **"google slides"**, **"drive"**, **"youtube"**, **"arxiv"**, **"paper search"** → `google-agent`
+
+#### Two Main Workflows
+
+**1. Adversarial Coding Pipeline** (use `adversarial-coding-pipeline` skill):
+```
+You (orchestrator) → architect-agent (PLAN) → coder-agent (RED/GREEN) → reviewer-agent (VERIFY)
+```
+
+**2. Adversarial Research Pipeline** (use `adversarial-research-pipeline` skill):
+```
+You (orchestrator) → architect-agent (PLAN via research-planner) → workers (RESEARCH) → reviewer-agent (CHALLENGE via research-critic) → WRITE → DELIVER
+```
+
+#### Ad-Hoc Review Delegation
+
+When asked to review a document, gist, PR, or any artifact — even without naming a specific skill — delegate to **reviewer-agent**. Include:
+- The URL or content to review
+- Any specific skill to use (e.g., "use research-critic", "use code-quality")
+- If no skill is specified, let reviewer-agent choose the appropriate one
+
+Example:
+```
+send_agent_message to reviewer-agent:
+"Review this gist using your research-critic skill: https://gist.github.com/... 
+Provide a structured critique covering accuracy, completeness, and quality."
+```
+
 ### Coding Tasks — Adversarial Pipeline (MANDATORY)
 
 When a user asks you to implement a feature, build something, write code, create a project, or execute any coding task:

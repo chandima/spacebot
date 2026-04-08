@@ -611,6 +611,10 @@ pub struct McpServerConfig {
     /// Timeout in seconds for MCP server initialization (default: 30).
     /// Increase for servers with slow startup (e.g., large cache loads).
     pub init_timeout_secs: u64,
+    /// When true, skip the blocking initial connect attempt and go straight
+    /// to background retry. Useful for slow-starting MCP servers (e.g.,
+    /// enterprise-slack) that shouldn't block agent initialization.
+    pub lazy_connect: bool,
 }
 
 /// MCP transport configuration.
